@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth } from "../auth/auth-middleware";
+import { requireAuth } from "../../core/auth-middleware";
 import { checkInReservation, checkOutReservation, createReservation, myReservations } from "./controller";
 
 

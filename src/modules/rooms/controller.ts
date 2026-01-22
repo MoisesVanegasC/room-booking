@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma } from "../../config/prisma";
+import { getAvailabilityService } from "./service";
 
 export async function listRooms(_req: Request, res: Response, next: NextFunction) {
     try {
@@ -33,6 +34,18 @@ export async function createRoom(req: Request, res: Response, next: NextFunction
         });
 
         res.status(201).json(room);
+    } catch (e) {
+        next(e);
+    }
+}
+
+export async function getRoomAvailability(req: any, res: Response, next: NextFunction) {
+    try {
+        const out = await getAvailabilityService({
+            roomId: req.params.id,
+            date: req.query.date,
+        });
+        res.json(out);
     } catch (e) {
         next(e);
     }

@@ -17,7 +17,7 @@ app.listen(PORT, () => {
 });
 
 if (ENABLE_WORKERS) {
-  // Cada 60s en dev (puedes subir a 5 min después)
+  // Cada 60s en dev
   setInterval(async () => {
     try {
       const out = await runNoShowSweep();

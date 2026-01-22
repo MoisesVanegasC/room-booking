@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { requireAuth } from "../../modules/auth/auth-middleware";
+import { requireAuth } from "../../core/auth-middleware";
 import { requireRole } from "../../core/role-middleware";
 import { listReservations } from "./controller";
 

@@ -1,11 +1,13 @@
 import { Router } from "express";
-import { requireAuth } from "../../modules/auth/auth-middleware";
+import { requireAuth } from "../../core/auth-middleware";
 import { requireRole } from "../../core/role-middleware";
-import { listRooms, createRoom } from "./controller";
+import { listRooms, createRoom, getRoomAvailability } from "./controller";
+
 
 const router = Router();
 
 router.get("/", listRooms);
+router.get("/:id/availability", requireAuth, getRoomAvailability);
 router.post("/", requireAuth, requireRole("ADMIN"), createRoom);
 
 export default router;

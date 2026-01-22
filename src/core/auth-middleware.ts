@@ -1,4 +1,4 @@
-import { verifyJwt } from "../../shared/jwt.js";
+import { verifyJwt } from "../shared/jwt.js";
 
 function parseCookie(cookieHeader?: string) {
     const raw = cookieHeader ?? "";
