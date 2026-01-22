@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { requireAuth } from "../../core/auth-middleware";
-import { requireAdmin } from "../../core/require-admin";
 import { requireRole } from "../../core/role-middleware";
 import { listRooms, createRoom, getRoomAvailability, getRoomRules, putRoomRule, createDefaultRoomRules } from "./controller";
 
@@ -15,9 +14,9 @@ router.post("/", requireAuth, createRoom);
 router.get("/:id/availability", requireAuth, getRoomAvailability);
 
 // Room rules
-router.get("/:id/rules", requireAuth, getRoomRules);
-router.put("/:id/rules/:dayOfWeek", requireAuth, putRoomRule);
-router.post("/:id/rules/default", requireAuth, createDefaultRoomRules);
+router.get("/:id/rules", requireAuth, requireRole("ADMIN"), getRoomRules);
+router.put("/:id/rules/:dayOfWeek", requireAuth, requireRole("ADMIN"), putRoomRule);
+router.post("/:id/rules/default", requireAuth, requireRole("ADMIN"), createDefaultRoomRules);
 
 
 export default router;

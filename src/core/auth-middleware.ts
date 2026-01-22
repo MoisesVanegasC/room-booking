@@ -14,10 +14,14 @@ export function requireAuth(req: any, _res: any, next: any) {
         if (!token) throw Object.assign(new Error("No autenticado"), { statusCode: 401 });
 
         const payload = verifyJwt(token);
-        req.user = { id: payload.sub, role: payload.role };
 
+        console.log("[AUTH] payload.sub:", payload.sub);
+        console.log("[AUTH] payload.role:", payload.role); // << CLAVE
+
+        req.user = { id: payload.sub, role: payload.role };
         next();
     } catch {
         next(Object.assign(new Error("No autenticado"), { statusCode: 401 }));
     }
 }
+
