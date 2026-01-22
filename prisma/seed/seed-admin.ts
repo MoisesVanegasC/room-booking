@@ -1,6 +1,6 @@
 import "dotenv/config";
 import bcrypt from "bcrypt";
-import { prisma } from "../src/config/prisma";
+import { prisma } from "../../src/config/prisma";
 
 async function main() {
     const email = "admin@test.com";
@@ -17,6 +17,7 @@ async function main() {
 
     console.log("ADMIN listo:", admin);
     console.log("Login con:", { email, password });
+    console.log("Seed OK");
 }
 
 main()

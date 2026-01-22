@@ -1,4 +1,4 @@
-import { prisma } from "../src/config/prisma";
+import { prisma } from "../../src/config/prisma";
 
 async function main() {
     await prisma.room.createMany({

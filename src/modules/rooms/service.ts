@@ -1,3 +1,4 @@
+// src/modules/rooms/service.ts
 import { prisma } from "../../config/prisma";
 
 function asUuid(value: unknown): string {
@@ -47,7 +48,6 @@ function parseYMD(dateStr: string): { y: number; m: number; d: number } {
         });
     }
 
-    // Validación mínima adicional
     if (m < 1 || m > 12 || d < 1 || d > 31) {
         throw Object.assign(new Error("date inválida"), {
             statusCode: 400,
@@ -107,7 +107,6 @@ function buildSlotsForDay(
 }
 
 function overlaps(aStart: Date, aEnd: Date, bStart: Date, bEnd: Date) {
-    // [aStart, aEnd) intersects [bStart, bEnd)
     return aStart < bEnd && bStart < aEnd;
 }
 
@@ -128,15 +127,43 @@ export async function getAvailabilityService(input: { roomId: unknown; date: unk
         });
     }
 
-    // Horario fijo por ahora (MVP)
-    const openAt = "08:00";
-    const closeAt = "20:00";
+    // Day of week (0=Domingo...6=Sábado)
+    const { y, m, d } = parseYMD(dateStr);
+    const dayOfWeek = new Date(y, m - 1, d).getDay();
 
-    // Slots
+    // Buscar regla del día en RoomRule
+    const rule = await prisma.roomRule.findUnique({
+        where: {
+            roomId_dayOfWeek: {
+                roomId,
+                dayOfWeek,
+            },
+        },
+        select: { openAt: true, closeAt: true, isClosed: true },
+    });
+
+    // Si no hay regla, para un MVP lo tratamos como cerrado
+    if (!rule || rule.isClosed) {
+        return {
+            roomId,
+            date: dateStr,
+            timezone: "America/Mexico_City",
+            dayOfWeek,
+            closed: true,
+            openAt: null,
+            closeAt: null,
+            slotMinutes: room.slotMinutes,
+            slots: [],
+        };
+    }
+
+    const openAt = rule.openAt;
+    const closeAt = rule.closeAt;
+
+    // Genera slots con la regla
     const slots = buildSlotsForDay(dateStr, openAt, closeAt, room.slotMinutes);
 
-    // Reservas que bloquean
-    const { y, m, d } = parseYMD(dateStr);
+    // Reservas que bloquean (CONFIRMED / IN_PROGRESS)
     const dayStart = new Date(y, m - 1, d, 0, 0, 0, 0);
     const dayEnd = new Date(y, m - 1, d, 23, 59, 59, 999);
 
@@ -152,7 +179,10 @@ export async function getAvailabilityService(input: { roomId: unknown; date: unk
 
     // Respuesta
     const outSlots = slots.map((s) => {
-        const blocked = reservations.some((r) => overlaps(s.startAt, s.endAt, r.startAt, r.endAt));
+        const blocked = reservations.some((r) =>
+            overlaps(s.startAt, s.endAt, r.startAt, r.endAt)
+        );
+
         return {
             startAt: s.startAt.toISOString(),
             endAt: s.endAt.toISOString(),
@@ -164,11 +194,11 @@ export async function getAvailabilityService(input: { roomId: unknown; date: unk
         roomId,
         date: dateStr,
         timezone: "America/Mexico_City",
+        dayOfWeek,
+        closed: false,
         openAt,
         closeAt,
         slotMinutes: room.slotMinutes,
         slots: outSlots,
     };
 }
-
-

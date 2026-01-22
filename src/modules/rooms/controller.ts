@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from "express";
 import { prisma } from "../../config/prisma";
 import { getAvailabilityService } from "./service";
+import { getRoomRulesService, upsertRoomRuleService, createDefaultRoomRulesService } from "./rules.service";
+
 
 export async function listRooms(_req: Request, res: Response, next: NextFunction) {
     try {
@@ -46,6 +48,39 @@ export async function getRoomAvailability(req: any, res: Response, next: NextFun
             date: req.query.date,
         });
         res.json(out);
+    } catch (e) {
+        next(e);
+    }
+}
+
+export async function getRoomRules(req: Request, res: Response, next: NextFunction) {
+    try {
+        const out = await getRoomRulesService({ roomId: req.params.id });
+        res.json(out);
+    } catch (e) {
+        next(e);
+    }
+}
+
+export async function putRoomRule(req: Request, res: Response, next: NextFunction) {
+    try {
+        const out = await upsertRoomRuleService({
+            roomId: req.params.id,
+            dayOfWeek: req.params.dayOfWeek,
+            openAt: req.body?.openAt,
+            closeAt: req.body?.closeAt,
+            isClosed: req.body?.isClosed,
+        });
+        res.json(out);
+    } catch (e) {
+        next(e);
+    }
+}
+
+export async function createDefaultRoomRules(req: Request, res: Response, next: NextFunction) {
+    try {
+        const out = await createDefaultRoomRulesService({ roomId: req.params.id });
+        res.status(201).json(out);
     } catch (e) {
         next(e);
     }

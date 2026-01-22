@@ -8,8 +8,9 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "seed": "tsx prisma/seed.ts",
-    "seed:admin" : "tsx prisma/seed-admin.ts"
+    "seed": "tsx prisma/seed/seed.ts",
+    "seed:admin" : "tsx prisma/seed/seed-admin.ts",
+    "seed:rules" : "tsx prisma/seed/seed-roomrules.ts"
   },
   "repository": {
     "type": "git",
