@@ -27,3 +27,7 @@ if (ENABLE_WORKERS) {
     }
   }, 60_000);
 }
+
+createApp().listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});

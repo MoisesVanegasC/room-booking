@@ -47,18 +47,6 @@ export function createApp() {
     }
   });
 
-  app.get("/rooms", async (_req, res, next) => {
-    try {
-      const rooms = await prisma.room.findMany({
-        select: { id: true, name: true, capacity: true },
-        orderBy: { createdAt: "asc" },
-      });
-      res.json(rooms);
-    } catch (err) {
-      next(err);
-    }
-  });
-
   app.use((err: any, _req: any, res: any, _next: any) => {
     const statusCode = err?.statusCode ?? 500;
 

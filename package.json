@@ -5,7 +5,7 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "test": "dotenv -e .env.test -- vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "dev": "tsx watch src/server.ts",
@@ -13,7 +13,8 @@
     "start": "node dist/server.js",
     "seed": "tsx prisma/seed/seed.ts",
     "seed:admin": "tsx prisma/seed/seed-admin.ts",
-    "seed:rules": "tsx prisma/seed/seed-roomrules.ts"
+    "seed:rules": "tsx prisma/seed/seed-roomrules.ts",
+    "test:db:reset": "dotenv -e .env.test -- npx prisma migrate reset --force"
   },
   "repository": {
     "type": "git",
@@ -45,6 +46,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.0.9",
     "@types/supertest": "^6.0.3",
+    "dotenv-cli": "^11.0.0",
     "supertest": "^7.2.2",
     "ts-node-dev": "^2.0.0",
     "tsx": "^4.21.0",
