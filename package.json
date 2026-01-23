@@ -6,15 +6,16 @@
   "type": "module",
   "scripts": {
     "test": "dotenv -e .env.test -- vitest run",
-    "test:watch": "vitest",
+    "test:watch": "dotenv -e .env.test -- vitest",
     "test:ui": "vitest --ui",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "seed": "tsx prisma/seed/seed.ts",
-    "seed:admin": "tsx prisma/seed/seed-admin.ts",
+    "seed": "tsx prisma/seed.ts",
+    "seed:rooms": "tsx prisma/seed/seed-rooms.ts",
+    "seed:admin-user": "tsx prisma/seed/seed-admin-user.ts",
     "seed:rules": "tsx prisma/seed/seed-roomrules.ts",
-    "test:db:reset": "dotenv -e .env.test -- npx prisma migrate reset --force"
+    "test:db:reset": "dotenv -e .env.test -- npx prisma migrate reset --force && dotenv -e .env.test -- npx tsx prisma/seed.ts"
   },
   "repository": {
     "type": "git",

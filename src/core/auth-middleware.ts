@@ -1,4 +1,5 @@
 import { verifyJwt } from "../shared/jwt.js";
+import { log } from "../shared/logger";
 
 function parseCookie(cookieHeader?: string) {
     const raw = cookieHeader ?? "";
@@ -15,8 +16,11 @@ export function requireAuth(req: any, _res: any, next: any) {
 
         const payload = verifyJwt(token);
 
-        console.log("[AUTH] payload.sub:", payload.sub);
-        console.log("[AUTH] payload.role:", payload.role); // << CLAVE
+        //console.log("[AUTH] payload.sub:", payload.sub);
+        //console.log("[AUTH] payload.role:", payload.role); // << CLAVE
+
+        log("[AUTH] payload.sub:", payload.sub);
+        log("[AUTH] payload.role:", payload.role);
 
         req.user = { id: payload.sub, role: payload.role };
         next();

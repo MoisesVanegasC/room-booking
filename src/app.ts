@@ -8,7 +8,6 @@ import roomsRouter from "./modules/rooms/routes";
 import adminRouter from "./modules/admin/routes";
 
 
-
 export function createApp() {
   const app = express();
 
@@ -16,7 +15,7 @@ export function createApp() {
   app.use(express.json());
   app.use(cookieParser());
 
-  // CORS: en local, permite tu Vite dev server
+  // CORS: en local
   app.use(
     cors({
       origin: ["http://localhost:5173"],
@@ -25,11 +24,8 @@ export function createApp() {
   );
 
   app.use("/reservations", reservationsRouter);
-
   app.use("/auth", authRouter);
-
   app.use("/rooms", roomsRouter);
-
   app.use("/admin", adminRouter);
 
   // Healthcheck
@@ -47,6 +43,7 @@ export function createApp() {
     }
   });
 
+  // Error handling middleware
   app.use((err: any, _req: any, res: any, _next: any) => {
     const statusCode = err?.statusCode ?? 500;
 
