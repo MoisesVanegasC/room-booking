@@ -73,6 +73,7 @@ async function main() {
 
     console.log("Seed OK");
     */
+
     console.log("ADMIN listo | Login admin:", Aemail);
     console.log("USER listo | Login user:", Uemail);
 
