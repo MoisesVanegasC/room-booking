@@ -59,8 +59,8 @@ async function main() {
         // Sábado 6
         await prisma.roomRule.upsert({
             where: { roomId_dayOfWeek: { roomId: room.id, dayOfWeek: 6 } },
-            update: { isClosed: false, openAt: "10:00", closeAt: "14:00" },
-            create: { roomId: room.id, dayOfWeek: 6, isClosed: false, openAt: "10:00", closeAt: "14:00" },
+            update: { isClosed: false, openAt: "10:00", closeAt: "17:00" },
+            create: { roomId: room.id, dayOfWeek: 6, isClosed: false, openAt: "10:00", closeAt: "17:00" },
         });
     }
 
