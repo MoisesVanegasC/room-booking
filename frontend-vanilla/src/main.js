@@ -15,6 +15,12 @@ const state = {
   reservationsLoading: false,
   roomsError: "",
   roomsLoading: false,
+  availabilityLoading: false,
+  ui: {
+    showBusy: true,
+    showPast: false,
+  },
+
 };
 
 function roomImage(name) {
@@ -103,18 +109,34 @@ async function loadRooms() {
 
 //! Cargar disponibilidad de la sala seleccionada
 async function loadAvailability({ silent = false } = {}) {
-  const date = el("#dateInput").value;
-  if (!state.selectedRoomId) return setMessage("err", "Primero selecciona una sala.");
-  if (!date) return setMessage("err", "Selecciona una fecha.");
+  const date = el("#dateInput")?.value ?? "";
+
+  if (!state.selectedRoomId) {
+    if (!silent) setMessage("err", "Por favor, seleccione una sala.");
+    return;
+  }
+  if (!date) {
+    if (!silent) setMessage("err", "Por favor, seleccione una fecha.");
+    return;
+  }
+
+  state.availabilityLoading = true;
+  render();
 
   try {
     const av = await api.availability(state.selectedRoomId, date);
     state.availability = av;
-    if (!silent) setMessage("ok", "Horarios actualizados.");
+    if (!silent) setMessage("ok", "Horarios cargados.");
   } catch (e) {
     state.availability = null;
-    if (!silent) setMessage("err", "No se pudieron cargar los horarios. Intenta otra fecha.");
+
+    if (e?.code === "TIMEOUT") {
+      if (!silent) setMessage("err", "El servicio tardó demasiado. Intente nuevamente.");
+    } else {
+      if (!silent) setMessage("err", `No se pudieron cargar los horarios (${e.status ?? "?"}).`);
+    }
   } finally {
+    state.availabilityLoading = false;
     render();
   }
 }
@@ -558,7 +580,28 @@ async function confirmReserve() {
   }
 }
 
+function ymdLocal(d = new Date()) {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function isTodaySelectedSafe() {
+  const input = el("#dateInput");
+  if (!input) return false;          // si todavía no existe en DOM
+  const selected = input.value;
+  return selected && selected === ymdLocal(new Date());
+}
+
+function isTodaySelected() {
+  const selected = el("#dateInput")?.value;
+  return selected && selected === ymdLocal(new Date());
+}
+
 function render() {
+  if (!state.ui) state.ui = { showBusy: true, showPast: false };
+  if (typeof state.availabilityLoading !== "boolean") state.availabilityLoading = false;
   const me = state.me?.user ?? null;
 
   // Pills del topbar
@@ -642,93 +685,202 @@ function render() {
   el("#roomsGrid").innerHTML = roomsHeader + (roomsHtml || `<div class="notice">No hay salas disponibles.</div>`);
 
 
+  //! Availability
   // Availability
   const av = state.availability;
+  const todaySelected = isTodaySelectedSafe();
+
+  // defaults UX: si es hoy, por defecto ocultamos pasados
+  if (todaySelected && state.ui.showPast === false) {
+    // ok, default
+  }
 
   if (!state.selectedRoomId) {
     el("#availabilityBox").innerHTML = `
-      <div class="notice">
-        Selecciona una sala para ver sus horarios.
-      </div>
-    `;
+    <div class="notice">
+      Seleccione una sala para ver sus horarios disponibles.
+    </div>
+  `;
+  } else if (state.availabilityLoading && !av) {
+    el("#availabilityBox").innerHTML = `
+    <div class="notice">Cargando horarios…</div>
+    <div class="slotsGrid" style="margin-top:10px;">
+      ${Array.from({ length: 8 }).map(() => `
+        <div class="slot busy" style="opacity:.55; pointer-events:none;">
+          <div class="slotTime">—:— - —:—</div>
+          <div class="slotBadge"><span class="badge">Cargando</span></div>
+        </div>
+      `).join("")}
+    </div>
+  `;
   } else if (!av) {
     el("#availabilityBox").innerHTML = `
-      <div class="notice">
-        Elige una fecha y pulsa <strong>Ver horarios</strong>.
-      </div>
-    `;
+    <div class="notice">
+      Elija una fecha y pulse <strong>Ver horarios</strong>.
+    </div>
+  `;
   } else if (av.closed) {
     el("#availabilityBox").innerHTML = `
-      <div class="notice err">
-        <strong>No disponible</strong><br/>
-          La sala no está abierta en esta fecha. Por favor, intente con otro día.
-      </div>
-    `;
-
+    <div class="notice err">
+      <strong>No disponible</strong><br/>
+      Esta sala no está abierta en la fecha seleccionada.
+    </div>
+  `;
   } else {
     const room = selectedRoom();
-    const selectedDate = el("#dateInput")?.value; // "YYYY-MM-DD"
-    const now = new Date();
-    let slots = av.slots ?? [];
 
-    // Si la fecha seleccionada es HOY (local), ocultamos slots que ya terminaron
-    if (selectedDate && isSameLocalDate(selectedDate, now)) {
-      slots = slots.filter((s) => new Date(s.endAt) > now);
+    let slots = av.slots ?? [];
+    const now = new Date();
+
+    // 1) Ocultar pasados si la fecha es hoy y showPast = false
+    if (todaySelected && !state.ui.showPast) {
+      slots = slots.filter((s) => {
+        const start = new Date(s.startAt);
+        return start > now;
+      });
     }
 
+    // 2) Mostrar/ocultar ocupados
+    if (!state.ui.showBusy) {
+      slots = slots.filter((s) => s.available);
+    }
+
+    const totalShown = slots.length;
     const freeCount = slots.filter((s) => s.available).length;
 
-    const slotsGrid = slots.map((s) => {
-      const wasJustReserved = state.lastReservedStartAt === s.startAt;
-      const clsBase = s.available ? "slot free" : "slot busy";
-      const cls = wasJustReserved ? `${clsBase} justReserved` : clsBase;
-      const disabled = s.available ? "" : "disabled";
-      const hint = s.available ? "Reservar" : "Ocupado";
+    const controls = `
+    <div class="row" style="justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+      <div class="small muted">
+        ${av.timezone} • Slot ${av.slotMinutes} min • Libres: <strong>${freeCount}</strong>
+        ${todaySelected && !state.ui.showPast ? `<span class="small muted">• Horarios pasados ocultos</span>` : ``}
+      </div>
 
-      return `
-        <button class="${cls}" ${disabled}
-          data-slot-start="${s.startAt}"
-          data-slot-end="${s.endAt}"
-          data-slot-available="${s.available ? "1" : "0"}"
-          title="${hint}">
-          <div class="slotTime">
-            ${fmtHM(s.startAt)} - ${fmtHM(s.endAt)}
-          </div>
-          <div class="slotBadge">
-            ${s.available ? `<span class="badge ok">Libre</span>` : `<span class="badge off">Ocupada</span>`}
-          </div>
+      <div class="row" style="gap:10px; flex-wrap:wrap;">
+        <label class="small" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+          <input type="checkbox" id="toggleBusy" ${state.ui.showBusy ? "checked" : ""}/>
+          Mostrar ocupados
+        </label>
+
+        <label class="small" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+          <input type="checkbox" id="togglePast" ${state.ui.showPast ? "checked" : ""}/>
+          Mostrar pasados
+        </label>
+
+        <button class="btn" id="btnNextFree" ${freeCount ? "" : "disabled"}>
+          Siguiente libre
         </button>
-      `;
-    }).join("");
+      </div>
+    </div>
+  `;
+
+const slotsGrid = slots.map((s) => {
+  const wasJustReserved = state.lastReservedStartAt === s.startAt;
+
+  const start = new Date(s.startAt);
+  const isPast = todaySelected && start <= now;
+  const pastIsVisible = todaySelected && state.ui.showPast && isPast;
+
+  let clsBase = "slot";
+  let disabled = "";
+  let badgeText = "";
+  let badgeClass = "";
+  let availableForPick = false;
+
+  // 1) pasados visibles => siempre "No disponible"
+  if (pastIsVisible) {
+    clsBase += " busy";
+    disabled = "disabled";
+    badgeText = "No disponible";
+    badgeClass = "off";
+    availableForPick = false;
+  }
+  // 2) ocupado
+  else if (!s.available) {
+    clsBase += " busy";
+    disabled = "disabled";
+    badgeText = "Ocupada";
+    badgeClass = "off";
+    availableForPick = false;
+  }
+  // 3) libre
+  else {
+    clsBase += " free";
+    badgeText = "Libre";
+    badgeClass = "ok";
+    availableForPick = true;
+  }
+
+  const cls = wasJustReserved ? `${clsBase} justReserved` : clsBase;
+
+  return `
+    <button class="${cls}" ${disabled}
+      data-slot-start="${s.startAt}"
+      data-slot-end="${s.endAt}"
+      data-slot-available="${availableForPick ? "1" : "0"}"
+      title="${badgeText}">
+      <div class="slotTime">
+        ${fmtHM(s.startAt)} - ${fmtHM(s.endAt)}
+      </div>
+      <div class="slotBadge">
+        <span class="badge ${badgeClass}">${badgeText}</span>
+      </div>
+    </button>
+  `;
+}).join("");
+
 
     el("#availabilityBox").innerHTML = `
-      <div class="avHeader">
-        <div>
-          <div class="avTitle">
-            <strong>Horarios • ${room?.name ?? "Sala"}</strong>
-            <span class="small">• ${av.date} • ${av.openAt}–${av.closeAt}</span>
-          </div>
-          <div class="small muted">
-            ${av.timezone} • Slot ${av.slotMinutes} min • Libres: <strong>${freeCount}</strong> / ${slots.length}
-          </div>
-        </div>
-        <div class="avActions">
-          <span class="badge ${canReserve() ? "ok" : "off"}">
-            ${canReserve() ? "Puede reservar" : "Inicie sesión para reservar"}
-          </span>
+      <div class="avHeader" >
+      <div>
+        <div class="avTitle">
+          <strong>Horarios • ${room?.name ?? "Sala"}</strong>
+          <span class="small">• ${av.date} • ${av.openAt}–${av.closeAt}</span>
         </div>
       </div>
+      <div class="avActions">
+        <span class="badge ${canReserve() ? "ok" : "off"}">
+          ${canReserve() ? "Puede reservar" : "Inicie sesión para reservar"}
+        </span>
+      </div >
+    </div >
 
-      <div class="slotsGrid">
-        ${slotsGrid || `<div class="notice">No hay slots.</div>`}
-      </div>
+      ${controls}
 
-      <div class="small muted" style="margin-top:10px;">
-        Seleccione un horario <strong>Libre</strong> para continuar.
-      </div>
+    <div class="slotsGrid" style="margin-top:10px;">
+      ${totalShown ? slotsGrid : `<div class="notice">No hay horarios para mostrar con los filtros actuales.</div>`}
+    </div>
+
+    <div class="small muted" style="margin-top:10px;">
+      Seleccione un horario <strong>Libre</strong> para continuar.
+    </div>
     `;
 
+    // Bind toggles + next free (una sola vez por render del availability)
+    const tBusy = el("#toggleBusy");
+    if (tBusy) {
+      tBusy.addEventListener("change", () => {
+        state.ui.showBusy = tBusy.checked;
+        render();
+      });
+    }
+
+    const tPast = el("#togglePast");
+    if (tPast) {
+      tPast.addEventListener("change", () => {
+        state.ui.showPast = tPast.checked;
+        render();
+      });
+    }
+
+    const btnNext = el("#btnNextFree");
+    if (btnNext) {
+      btnNext.addEventListener("click", () => {
+        const firstFree = document.querySelector('.slotsGrid [data-slot-available="1"]');
+        if (firstFree) firstFree.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
   }
+
 
   // Bind room buttons
   document.querySelectorAll("[data-select-room]").forEach((btn) => {
@@ -768,7 +920,7 @@ function boot() {
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
-  el("#dateInput").value = `${yyyy}-${mm}-${dd}`;
+  el("#dateInput").value = `${yyyy}-${mm}-${dd} `;
 
   el("#btnLogin").addEventListener("click", onLogin);
   el("#btnLogout").addEventListener("click", onLogout);
@@ -847,7 +999,7 @@ function boot() {
 }
 
 document.querySelector("#app").innerHTML = `
-  <div class="container">
+  <div class="container" >
     <div class="topbar">
       <div class="brand">
         <div class="logo"></div>
@@ -951,22 +1103,22 @@ document.querySelector("#app").innerHTML = `
       </div>
     </div>
 
-  </div>
+  </div >
 
-  <!-- Modal Reserva -->
-  <div class="modalOverlay" id="modalOverlay" aria-hidden="true">
-    <div class="modal">
-      <div class="modalHeader">
-        <div class="modalTitle" id="modalTitle">Confirmar reserva</div>
-        <button class="iconBtn" id="modalClose" title="Cerrar">✕</button>
+  <!--Modal Reserva-->
+      <div class="modalOverlay" id="modalOverlay" aria-hidden="true">
+        <div class="modal">
+          <div class="modalHeader">
+            <div class="modalTitle" id="modalTitle">Confirmar reserva</div>
+            <button class="iconBtn" id="modalClose" title="Cerrar">✕</button>
+          </div>
+          <div class="modalBody" id="modalBody"></div>
+          <div class="modalFooter">
+            <button class="btn" id="btnCancelReserve">Cancelar</button>
+            <button class="btn btnPrimary" id="btnConfirmReserve">Confirmar reserva</button>
+          </div>
+        </div>
       </div>
-      <div class="modalBody" id="modalBody"></div>
-      <div class="modalFooter">
-        <button class="btn" id="btnCancelReserve">Cancelar</button>
-        <button class="btn btnPrimary" id="btnConfirmReserve">Confirmar reserva</button>
-      </div>
-    </div>
-  </div>
-`;
+    `;
 
 boot();
