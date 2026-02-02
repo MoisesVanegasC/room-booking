@@ -156,7 +156,6 @@ async function loadMyReservations({ silent = false } = {}) {
     const data = await api.myReservations();
     console.log("[myReservations] raw:", data);
 
-    // ✅ tu backend regresa { reservations: [...] }
     const items =
       Array.isArray(data) ? data :
         Array.isArray(data?.reservations) ? data.reservations :
@@ -210,7 +209,7 @@ async function onLogin() {
     return;
   }
 
-  // 3) Cargar datos de la app (si fallan, la sesión ya está OK)
+  // 3) Cargar datos de la app
   try {
     await loadRooms();
     await loadMyReservations({ silent: true });
@@ -391,7 +390,6 @@ function isSameLocalDate(isoDateYmd, d = new Date()) {
 }
 
 function getCheckTimes(r) {
-  // Soporta varios nombres posibles (por si el backend cambia)
   const checkInAt = r.checkInAt || r.checkedInAt || r.check_in_at || r.checkinAt || null;
   const checkOutAt = r.checkOutAt || r.checkedOutAt || r.check_out_at || r.checkoutAt || null;
   return { checkInAt, checkOutAt };
@@ -405,7 +403,7 @@ function reservationOutcomeText(r) {
   const start = new Date(r.startAt);
   const end = new Date(r.endAt);
 
-  // 1) Si su backend ya marca COMPLETED o hay check-in + check-out => Realizada
+  // 1) Si backend ya marca COMPLETED o hay check-in + check-out => Realizada
   if (status === "COMPLETED" || (checkInAt && checkOutAt)) {
     return { label: "Realizada", reason: "" };
   }
@@ -415,7 +413,7 @@ function reservationOutcomeText(r) {
     return { label: "Cancelada", reason: "" };
   }
 
-  // 3) Si ya pasó el fin de la reserva y no se completó, explicamos por qué
+  // 3) Si ya pasó el fin de la reserva y no se completó, damos razon
   if (now > end) {
     // caso: nunca hizo check-in
     if (!checkInAt) {
@@ -459,22 +457,24 @@ function renderReservations() {
     return `<div class="notice">Aún no tiene reservas. Seleccione una sala y elija un horario disponible.</div>`;
   }
 
-  const rows = items.slice(0, 8).map((r) => {
+  // 1) Ordenar más recientes primero (por startAt)
+  const sorted = [...items].sort((a, b) => new Date(b.startAt) - new Date(a.startAt));
+
+  // 2) Separar próximas vs pasadas (por endAt)
+  const now = new Date();
+  const upcoming = sorted.filter((r) => new Date(r.endAt) >= now);
+  const past = sorted.filter((r) => new Date(r.endAt) < now);
+
+  const renderRow = (r) => {
     const status = (r.status ?? "CONFIRMED").toString().toUpperCase();
 
+    // Reglas de botones
     const canCancel = status === "CONFIRMED";
     const canCheckIn = status === "CONFIRMED";
     const canCheckOut = status === "IN_PROGRESS";
 
     const start = new Date(r.startAt);
-    const end = new Date(r.endAt);
-
-    const dateStr = start.toLocaleDateString([], {
-      weekday: "short",
-      day: "2-digit",
-      month: "short",
-    });
-
+    const dateStr = start.toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" });
     const time = `${dateStr} • ${fmtHM(r.startAt)} - ${fmtHM(r.endAt)}`;
 
     const roomName =
@@ -498,38 +498,68 @@ function renderReservations() {
                 ? `<span class="badge ok">En curso</span>`
                 : `<span class="badge ok">Activa</span>`;
 
+    // Si ya es pasada, aunque esté CONFIRMED, no debería ofrecer acciones (solo UX)
+    const isPast = new Date(r.endAt) < now;
+    const disableActions = isPast || outcome.label === "Realizada" || outcome.label === "Cancelada" || outcome.label === "Perdida" || outcome.label === "Incompleta";
+
     return `
-    <div class="resRow">
-      <div class="resLeft">
-        <div class="resTop">
-          <strong>${roomName}</strong>
-          ${statusBadge}
+      <div class="resRow">
+        <div class="resLeft">
+          <div class="resTop">
+            <strong>${roomName}</strong>
+            ${statusBadge}
+          </div>
+          <div class="small muted">${time}</div>
+          ${outcome.reason ? `<div class="small" style="margin-top:6px;"><strong>Motivo:</strong> ${outcome.reason}</div>` : ``}
+          <div class="small muted">id: ${(r.id ?? "").slice(0, 8)}…</div>
         </div>
-        <div class="small muted">${time}</div>
-        ${outcome.reason ? `<div class="small" style="margin-top:6px;"><strong>Motivo:</strong> ${outcome.reason}</div>` : ``}
-        <div class="small muted">id: ${(r.id ?? "").slice(0, 8)}…</div>
-      </div>
 
-      <div class="resRight">
-        ${canCheckIn ? `<button class="btn btnPrimary" data-checkin-res="${r.id}">Check-In</button>` : ``}
-        ${canCheckOut ? `<button class="btn btnPrimary" data-checkout-res="${r.id}">Check-Out</button>` : ``}
-        ${canCancel ? `<button class="btn btnDanger" data-cancel-res="${r.id}">Cancelar</button>` : `<button class="btn" disabled>No disponible</button>`}
+        <div class="resRight">
+          ${disableActions
+        ? `<button class="btn" disabled>No disponible</button>`
+        : `
+                ${canCheckIn ? `<button class="btn btnPrimary" data-checkin-res="${r.id}">Check-In</button>` : ``}
+                ${canCheckOut ? `<button class="btn btnPrimary" data-checkout-res="${r.id}">Check-Out</button>` : ``}
+                ${canCancel ? `<button class="btn btnDanger" data-cancel-res="${r.id}">Cancelar</button>` : ``}
+              `
+      }
+        </div>
       </div>
-    </div>
-  `;
-  }).join("");
+    `;
+  };
 
+  const section = (title, arr) => {
+    if (!arr.length) {
+      return `
+        <div style="margin-top:10px;">
+          <div class="sectionTitle" style="justify-content:space-between;">
+            <h4 style="margin:0;">${title}</h4>
+            <span class="small muted">0</span>
+          </div>
+          <div class="notice" style="margin-top:8px;">Sin reservas en esta sección.</div>
+        </div>
+      `;
+    }
+
+    return `
+      <div style="margin-top:10px;">
+        <div class="sectionTitle" style="justify-content:space-between;">
+          <h4 style="margin:0;">${title}</h4>
+          <span class="small muted">${arr.length}</span>
+        </div>
+        <div class="resList" style="margin-top:8px;">
+          ${arr.slice(0, 6).map(renderRow).join("")}
+        </div>
+        <div class="small muted" style="margin-top:10px;">Mostrando ${Math.min(6, arr.length)}.</div>
+      </div>
+    `;
+  };
 
   return `
-    <div class="resList">
-      ${rows}
-    </div>
-    <div class="small muted" style="margin-top:10px;">
-      Mostrando 8 más recientes.
-    </div>
+    ${section("Próximas", upcoming)}
+    ${section("Pasadas", past)}
   `;
 }
-
 
 async function confirmReserve() {
   const roomId = state.selectedRoomId;
@@ -587,15 +617,10 @@ function ymdLocal(d = new Date()) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function isTodaySelectedSafe() {
+function isTodaySelected() {
   const input = el("#dateInput");
   if (!input) return false;          // si todavía no existe en DOM
   const selected = input.value;
-  return selected && selected === ymdLocal(new Date());
-}
-
-function isTodaySelected() {
-  const selected = el("#dateInput")?.value;
   return selected && selected === ymdLocal(new Date());
 }
 
@@ -688,7 +713,7 @@ function render() {
   //! Availability
   // Availability
   const av = state.availability;
-  const todaySelected = isTodaySelectedSafe();
+  const todaySelected = isTodaySelected();
 
   // defaults UX: si es hoy, por defecto ocultamos pasados
   if (todaySelected && state.ui.showPast === false) {
@@ -773,46 +798,46 @@ function render() {
     </div>
   `;
 
-const slotsGrid = slots.map((s) => {
-  const wasJustReserved = state.lastReservedStartAt === s.startAt;
+    const slotsGrid = slots.map((s) => {
+      const wasJustReserved = state.lastReservedStartAt === s.startAt;
 
-  const start = new Date(s.startAt);
-  const isPast = todaySelected && start <= now;
-  const pastIsVisible = todaySelected && state.ui.showPast && isPast;
+      const start = new Date(s.startAt);
+      const isPast = todaySelected && start <= now;
+      const pastIsVisible = todaySelected && state.ui.showPast && isPast;
 
-  let clsBase = "slot";
-  let disabled = "";
-  let badgeText = "";
-  let badgeClass = "";
-  let availableForPick = false;
+      let clsBase = "slot";
+      let disabled = "";
+      let badgeText = "";
+      let badgeClass = "";
+      let availableForPick = false;
 
-  // 1) pasados visibles => siempre "No disponible"
-  if (pastIsVisible) {
-    clsBase += " busy";
-    disabled = "disabled";
-    badgeText = "No disponible";
-    badgeClass = "off";
-    availableForPick = false;
-  }
-  // 2) ocupado
-  else if (!s.available) {
-    clsBase += " busy";
-    disabled = "disabled";
-    badgeText = "Ocupada";
-    badgeClass = "off";
-    availableForPick = false;
-  }
-  // 3) libre
-  else {
-    clsBase += " free";
-    badgeText = "Libre";
-    badgeClass = "ok";
-    availableForPick = true;
-  }
+      // 1) pasados visibles => siempre "No disponible"
+      if (pastIsVisible) {
+        clsBase += " busy";
+        disabled = "disabled";
+        badgeText = "No disponible";
+        badgeClass = "off";
+        availableForPick = false;
+      }
+      // 2) ocupado
+      else if (!s.available) {
+        clsBase += " busy";
+        disabled = "disabled";
+        badgeText = "Ocupada";
+        badgeClass = "off";
+        availableForPick = false;
+      }
+      // 3) libre
+      else {
+        clsBase += " free";
+        badgeText = "Libre";
+        badgeClass = "ok";
+        availableForPick = true;
+      }
 
-  const cls = wasJustReserved ? `${clsBase} justReserved` : clsBase;
+      const cls = wasJustReserved ? `${clsBase} justReserved` : clsBase;
 
-  return `
+      return `
     <button class="${cls}" ${disabled}
       data-slot-start="${s.startAt}"
       data-slot-end="${s.endAt}"
@@ -826,7 +851,7 @@ const slotsGrid = slots.map((s) => {
       </div>
     </button>
   `;
-}).join("");
+    }).join("");
 
 
     el("#availabilityBox").innerHTML = `
@@ -887,7 +912,7 @@ const slotsGrid = slots.map((s) => {
     btn.addEventListener("click", async () => {
       const id = btn.getAttribute("data-select-room");
       state.selectedRoomId = id;
-      state.availability = null; // limpio vista anterior para evitar confusión
+      state.availability = null; // limpia vista anterior para evitar confusión
       render();
       await loadAvailability({ silent: false });
       el("#availabilityBox")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -907,8 +932,7 @@ function humanError(e, fallback = "Ocurrió un error. Intente de nuevo.") {
   if (status === 409) return "Ese horario ya no está disponible. Por favor, elija otro.";
   if (status === 422) return "No se pudo completar la acción por reglas del sistema. Revise e intente de nuevo.";
   if (status >= 500) return "El servicio no está disponible en este momento. Intente más tarde.";
-
-  // Si el backend mandó un msg decente, úselo
+  // Mensajes específicos del backend
   if (e?.message && typeof e.message === "string" && e.message.trim()) return e.message;
 
   return fallback;
