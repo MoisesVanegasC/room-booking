@@ -173,6 +173,7 @@ async function loadMyReservations({ silent = false } = {}) {
     state.reservationsLoading = false;
     render();
   }
+  console.log("[myReservations] sample:", state.reservations?.[0]);
 }
 
 
@@ -381,14 +382,6 @@ function renderModal() {
   `;
 }
 
-function isSameLocalDate(isoDateYmd, d = new Date()) {
-  // isoDateYmd: "YYYY-MM-DD" del input type="date"
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}` === isoDateYmd;
-}
-
 function getCheckTimes(r) {
   const checkInAt = r.checkInAt || r.checkedInAt || r.check_in_at || r.checkinAt || null;
   const checkOutAt = r.checkOutAt || r.checkedOutAt || r.check_out_at || r.checkoutAt || null;
@@ -403,10 +396,11 @@ function reservationOutcomeText(r) {
   const start = new Date(r.startAt);
   const end = new Date(r.endAt);
 
-  // 1) Si backend ya marca COMPLETED o hay check-in + check-out => Realizada
-  if (status === "COMPLETED" || (checkInAt && checkOutAt)) {
+  // 1) Si backend ya marca FINISHED o hay check-in + check-out => Realizada
+  if (status === "FINISHED" || status === "FINISHED" || (checkInAt && checkOutAt)) {
     return { label: "Realizada", reason: "" };
   }
+
 
   // 2) Si está cancelada, no inventamos razones
   if (status === "CANCELLED") {
@@ -436,6 +430,100 @@ function reservationOutcomeText(r) {
   return { label: "Activa", reason: "" };
 }
 
+function startOfLocalDay(d = new Date()) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+}
+
+function endOfLocalDay(d = new Date()) {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+}
+
+function sortByStartAsc(a, b) {
+  return new Date(a.startAt) - new Date(b.startAt);
+}
+function sortByStartDesc(a, b) {
+  return new Date(b.startAt) - new Date(a.startAt);
+}
+
+function reservationCard(r) {
+  const status = (r.status ?? "CONFIRMED").toString().toUpperCase();
+  const start = new Date(r.startAt);
+  const end = new Date(r.endAt);
+
+  const roomName =
+    r.room?.name ||
+    r.roomName ||
+    state.rooms.find((x) => x.id === r.roomId)?.name ||
+    "Sala";
+
+  const outcome = reservationOutcomeText(r);
+
+  const badge =
+    outcome.label === "Realizada"
+      ? `<span class="badge ok">Realizada</span>`
+      : outcome.label === "Perdida"
+        ? `<span class="badge off">Perdida</span>`
+        : outcome.label === "Incompleta"
+          ? `<span class="badge off">Incompleta</span>`
+          : outcome.label === "Cancelada"
+            ? `<span class="badge off">Cancelada</span>`
+            : outcome.label === "En curso"
+              ? `<span class="badge ok">En curso</span>`
+              : `<span class="badge ok">Activa</span>`;
+
+  // Botones status/outcome
+  const canCancel = status === "CONFIRMED" && outcome.label === "Activa";
+  const canCheckIn = status === "CONFIRMED" && outcome.label === "Activa";
+  const canCheckOut = status === "IN_PROGRESS" && outcome.label === "En curso";
+
+  const dateStr = start.toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" });
+  const timeStr = `${dateStr} • ${fmtHM(r.startAt)} - ${fmtHM(r.endAt)}`;
+
+  return `
+    <div class="resRow">
+      <div class="resLeft">
+        <div class="resTop">
+          <strong>${roomName}</strong>
+          ${badge}
+        </div>
+        <div class="small muted">${timeStr}</div>
+
+        ${outcome.reason ? `<div class="small" style="margin-top:6px;"><strong>Motivo:</strong> ${outcome.reason}</div>` : ``}
+
+        <div class="small muted">id: ${(r.id ?? "").slice(0, 8)}…</div>
+      </div>
+
+      <div class="resRight">
+        ${canCheckIn ? `<button class="btn btnPrimary" data-checkin-res="${r.id}">Check-In</button>` : ``}
+        ${canCheckOut ? `<button class="btn btnPrimary" data-checkout-res="${r.id}">Check-Out</button>` : ``}
+        ${canCancel ? `<button class="btn btnDanger" data-cancel-res="${r.id}">Cancelar</button>` : `<button class="btn" disabled>No disponible</button>`}
+      </div>
+    </div>
+  `;
+}
+
+function reservationsSection(title, items, emptyText) {
+  if (!items.length) {
+    return `
+      <div class="notice" style="margin-top:10px;">
+        <strong>${title}</strong><br/>
+        <span class="small">${emptyText}</span>
+      </div>
+    `;
+  }
+
+  return `
+    <div style="margin-top:12px;">
+      <div class="sectionTitle" style="margin-bottom:8px;">
+        <h3>${title}</h3>
+        <span class="badge">${items.length}</span>
+      </div>
+      <div class="resList">
+        ${items.map(reservationCard).join("")}
+      </div>
+    </div>
+  `;
+}
 
 function renderReservations() {
   const me = state.me?.user ?? null;
@@ -452,112 +540,61 @@ function renderReservations() {
     return `<div class="notice">Cargando sus reservas…</div>`;
   }
 
-  const items = state.reservations ?? [];
+  const items = (state.reservations ?? []).slice().sort(sortByStartAsc);
   if (!items.length) {
     return `<div class="notice">Aún no tiene reservas. Seleccione una sala y elija un horario disponible.</div>`;
   }
 
-  // 1) Ordenar más recientes primero (por startAt)
-  const sorted = [...items].sort((a, b) => new Date(b.startAt) - new Date(a.startAt));
-
-  // 2) Separar próximas vs pasadas (por endAt)
   const now = new Date();
-  const upcoming = sorted.filter((r) => new Date(r.endAt) >= now);
-  const past = sorted.filter((r) => new Date(r.endAt) < now);
+  const today0 = startOfLocalDay(now);
+  const todayEnd = endOfLocalDay(now);
 
-  const renderRow = (r) => {
-    const status = (r.status ?? "CONFIRMED").toString().toUpperCase();
+  const today = [];
+  const upcoming = [];
+  const past = [];
 
-    // Reglas de botones
-    const canCancel = status === "CONFIRMED";
-    const canCheckIn = status === "CONFIRMED";
-    const canCheckOut = status === "IN_PROGRESS";
-
+  for (const r of items) {
     const start = new Date(r.startAt);
-    const dateStr = start.toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" });
-    const time = `${dateStr} • ${fmtHM(r.startAt)} - ${fmtHM(r.endAt)}`;
-
-    const roomName =
-      r.room?.name ||
-      r.roomName ||
-      state.rooms.find((x) => x.id === r.roomId)?.name ||
-      "Sala";
-
+    const end = new Date(r.endAt);
     const outcome = reservationOutcomeText(r);
 
-    const statusBadge =
-      outcome.label === "Realizada"
-        ? `<span class="badge ok">Realizada</span>`
-        : outcome.label === "Perdida"
-          ? `<span class="badge off">Perdida</span>`
-          : outcome.label === "Incompleta"
-            ? `<span class="badge off">Incompleta</span>`
-            : outcome.label === "Cancelada"
-              ? `<span class="badge off">Cancelada</span>`
-              : outcome.label === "En curso"
-                ? `<span class="badge ok">En curso</span>`
-                : `<span class="badge ok">Activa</span>`;
+    const isEnded = now > end;
 
-    // Si ya es pasada, aunque esté CONFIRMED, no debería ofrecer acciones (solo UX)
-    const isPast = new Date(r.endAt) < now;
-    const disableActions = isPast || outcome.label === "Realizada" || outcome.label === "Cancelada" || outcome.label === "Perdida" || outcome.label === "Incompleta";
-
-    return `
-      <div class="resRow">
-        <div class="resLeft">
-          <div class="resTop">
-            <strong>${roomName}</strong>
-            ${statusBadge}
-          </div>
-          <div class="small muted">${time}</div>
-          ${outcome.reason ? `<div class="small" style="margin-top:6px;"><strong>Motivo:</strong> ${outcome.reason}</div>` : ``}
-          <div class="small muted">id: ${(r.id ?? "").slice(0, 8)}…</div>
-        </div>
-
-        <div class="resRight">
-          ${disableActions
-        ? `<button class="btn" disabled>No disponible</button>`
-        : `
-                ${canCheckIn ? `<button class="btn btnPrimary" data-checkin-res="${r.id}">Check-In</button>` : ``}
-                ${canCheckOut ? `<button class="btn btnPrimary" data-checkout-res="${r.id}">Check-Out</button>` : ``}
-                ${canCancel ? `<button class="btn btnDanger" data-cancel-res="${r.id}">Cancelar</button>` : ``}
-              `
-      }
-        </div>
-      </div>
-    `;
-  };
-
-  const section = (title, arr) => {
-    if (!arr.length) {
-      return `
-        <div style="margin-top:10px;">
-          <div class="sectionTitle" style="justify-content:space-between;">
-            <h4 style="margin:0;">${title}</h4>
-            <span class="small muted">0</span>
-          </div>
-          <div class="notice" style="margin-top:8px;">Sin reservas en esta sección.</div>
-        </div>
-      `;
+    // Regla 1: si ya terminó (aunque sea hoy) => Pasadas
+    if (isEnded) {
+      past.push(r);
+      continue;
     }
 
-    return `
-      <div style="margin-top:10px;">
-        <div class="sectionTitle" style="justify-content:space-between;">
-          <h4 style="margin:0;">${title}</h4>
-          <span class="small muted">${arr.length}</span>
-        </div>
-        <div class="resList" style="margin-top:8px;">
-          ${arr.slice(0, 6).map(renderRow).join("")}
-        </div>
-        <div class="small muted" style="margin-top:10px;">Mostrando ${Math.min(6, arr.length)}.</div>
-      </div>
-    `;
-  };
+    // Regla 2: finalizada/cancelada/perdida/incompleta => Pasadas (aunque no haya terminado, por si backend lo marca)
+    if (
+      outcome.label === "Finalizada" ||
+      outcome.label === "Cancelada" ||
+      outcome.label === "Perdida" ||
+      outcome.label === "Incompleta"
+    ) {
+      past.push(r);
+      continue;
+    }
+
+    // Si todavía no termina:
+    const touchesToday = (start <= todayEnd && end >= today0);
+    if (touchesToday) today.push(r);
+    else if (start > todayEnd) upcoming.push(r);
+    else past.push(r);
+  }
+
+
+
+  // UX: Hoy y Próximas ascendente; Pasadas descendente (más recientes arriba)
+  today.sort(sortByStartAsc);
+  upcoming.sort(sortByStartAsc);
+  past.sort(sortByStartDesc);
 
   return `
-    ${section("Próximas", upcoming)}
-    ${section("Pasadas", past)}
+    ${reservationsSection("Hoy", today, "Usted no tiene reservas para hoy.")}
+    ${reservationsSection("Próximas", upcoming, "Usted no tiene reservas próximas.")}
+    ${reservationsSection("Pasadas", past, "Usted no tiene reservas pasadas.")}
   `;
 }
 
@@ -944,7 +981,7 @@ function boot() {
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
-  el("#dateInput").value = `${yyyy}-${mm}-${dd} `;
+  el("#dateInput").value = `${yyyy}-${mm}-${dd}`;
 
   el("#btnLogin").addEventListener("click", onLogin);
   el("#btnLogout").addEventListener("click", onLogout);

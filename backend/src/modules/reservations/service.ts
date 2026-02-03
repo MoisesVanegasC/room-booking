@@ -8,14 +8,14 @@ type CreateReservationInput = {
     endAt: unknown;
 };
 
-function asUuid(value: unknown): string {
+function asUuid(value: unknown, fieldName = "id"): string {
     const s = String(value ?? "").trim();
     const uuid =
         /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-    if (!s) throw Object.assign(new Error("roomId requerido"), { statusCode: 400 });
+    if (!s) throw Object.assign(new Error(`${fieldName} requerido`), { statusCode: 400 });
     if (!uuid.test(s))
-        throw Object.assign(new Error("roomId debe ser UUID válido"), { statusCode: 400 });
+        throw Object.assign(new Error(`${fieldName} debe ser UUID válido`), { statusCode: 400 });
     return s;
 }
 
@@ -29,8 +29,8 @@ function asDate(value: unknown, fieldName: string): Date {
 
 export async function createReservationService(input: CreateReservationInput) {
     // 1) Validaciones básicas
-    const userId = asUuid(input.userId);
-    const roomId = asUuid(input.roomId);
+    const userId = asUuid(input.userId, "userId");
+    const roomId = asUuid(input.roomId, "roomId");
     const startAt = asDate(input.startAt, "startAt");
     const endAt = asDate(input.endAt, "endAt");
 
@@ -89,8 +89,73 @@ function mustOwnOrAdmin(actor: any, reservationUserId: string) {
     }
 }
 
+export async function cancelReservationService(input: {
+    reservationId: unknown;
+    requester: { id: string; role: "ADMIN" | "USER" };
+}) {
+    const reservationId = asUuid(input.reservationId, "reservationId");
+    const { id: userId, role } = input.requester;
+
+    const reservation = await prisma.reservation.findUnique({
+        where: { id: reservationId },
+        select: {
+            id: true,
+            userId: true,
+            status: true,
+            startAt: true,
+        },
+    });
+
+    if (!reservation) {
+        throw Object.assign(new Error("Reserva no existe"), {
+            statusCode: 404,
+            code: "NOT_FOUND",
+        });
+    }
+
+    // Permisos
+    const isOwner = reservation.userId === userId;
+    const isAdmin = role === "ADMIN";
+    if (!isOwner && !isAdmin) {
+        throw Object.assign(new Error("No autorizado"), {
+            statusCode: 403,
+            code: "FORBIDDEN",
+        });
+    }
+
+    // Estados permitidos para cancelar
+    if (reservation.status !== "CONFIRMED") {
+        throw Object.assign(new Error("Estado inválido para cancelar"), {
+            statusCode: 409,
+            code: "INVALID_STATE",
+        });
+    }
+
+    // Regla pro: no cancelar muy tarde (ej. menos de 30 min)
+    const MINUTES_BEFORE_START = 30;
+    const now = new Date();
+    const limit = new Date(reservation.startAt.getTime() - MINUTES_BEFORE_START * 60 * 1000);
+    if (now >= limit) {
+        throw Object.assign(new Error("Muy tarde para cancelar esta reserva"), {
+            statusCode: 409,
+            code: "TOO_LATE_TO_CANCEL",
+        });
+    }
+
+    const updated = await prisma.reservation.update({
+        where: { id: reservationId },
+        data: {
+            status: "CANCELLED",
+            cancelledAt: new Date(), // si agregaste el campo
+        },
+        select: { id: true, status: true, cancelledAt: true },
+    });
+
+    return updated;
+}
+
 export async function checkInService(input: { reservationId: unknown; actor: any }) {
-    const reservationId = asUuid(input.reservationId);
+    const reservationId = asUuid(input.reservationId, "reservationId");
 
     const r = await prisma.reservation.findUnique({ where: { id: reservationId } });
     if (!r) {

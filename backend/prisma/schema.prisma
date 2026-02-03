@@ -53,10 +53,13 @@ model Reservation {
   startAt       DateTime
   endAt         DateTime
   status        ReservationStatus @default(CONFIRMED)
+
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
+
   checkInAt     DateTime?
   checkOutAt    DateTime?
+  cancelledAt   DateTime?
   lateCheckout  Boolean           @default(false)
 
   room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
