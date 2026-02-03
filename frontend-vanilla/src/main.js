@@ -221,6 +221,36 @@ async function onLogin() {
   }
 }
 
+//! Registrar usuario
+async function onRegister() {
+  const email = el("#regEmail").value.trim();
+  const password = el("#regPassword").value;
+  const fullName = el("#regFullName").value.trim();
+
+  if (!email || !password || !fullName) {
+    setMessage("err", "Complete nombre, correo y contraseña para registrarse.");
+    return;
+  }
+
+  try {
+    setMessage("ok", "Creando cuenta…");
+    await api.register({ email, password, fullName });
+
+    setMessage("ok", "Cuenta creada. Iniciando sesión…");
+    await api.login(email, password);
+    await loadMe();
+    await loadRooms();
+    await loadMyReservations({ silent: true });
+
+    setMessage("ok", "Registro exitoso. Sesión iniciada correctamente.");
+  } catch (e) {
+    // Ajusta según códigos reales del backend
+    if (e.status === 409) setMessage("err", "Ese correo ya está registrado.");
+    else if (e.status === 400) setMessage("err", "Datos inválidos. Revise e intente de nuevo.");
+    else setMessage("err", `No se pudo registrar (${e.status ?? "?"}).`);
+  }
+}
+
 
 //! Cerrar sesión
 async function onLogout() {
@@ -986,6 +1016,10 @@ function boot() {
   el("#btnLogin").addEventListener("click", onLogin);
   el("#btnLogout").addEventListener("click", onLogout);
 
+  const btnReg = el("#btnRegister");
+  if (btnReg) btnReg.addEventListener("click", onRegister);
+
+
   el("#btnReload").addEventListener("click", async () => {
     await loadMe();
     await loadRooms();
@@ -1113,6 +1147,31 @@ document.querySelector("#app").innerHTML = `
           <div style="margin-top:12px;" id="meBox"></div>
 
           <hr class="sep"/>
+
+          <!-- Registro -->
+          <div class="sectionTitle" style="margin-top:6px;">
+            <h3>Crear cuenta</h3>
+            <span class="small muted">Registro rápido</span>
+          </div>
+
+          <div class="row">
+            <div>
+              <label class="small">Nombre completo</label>
+              <input class="input" id="regFullName" placeholder="Tu nombre" />
+            </div>
+            <div>
+              <label class="small">Email</label>
+              <input class="input" id="regEmail" placeholder="correo@dominio.com" />
+            </div>
+            <div>
+              <label class="small">Password</label>
+              <input class="input" id="regPassword" type="password" placeholder="Crea una contraseña" />
+            </div>
+            <div style="flex:0 0 auto; min-width: 180px;">
+              <label class="small">&nbsp;</label>
+              <button class="btn btnPrimary" id="btnRegister" style="width:100%;">Registrarme</button>
+            </div>
+          </div>
 
           <!-- Availability -->
           <div class="row">

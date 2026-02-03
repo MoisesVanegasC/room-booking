@@ -25,6 +25,7 @@ export async function myReservations(req: any, res: Response, next: NextFunction
             select: {
                 id: true,
                 roomId: true,
+                room: { select: { name: true } },
                 startAt: true,
                 endAt: true,
                 status: true,

@@ -64,6 +64,7 @@ async function apiFetch(path, { method = "GET", body, headers, timeoutMs = 15000
 export const api = {
     login: (email, password) => apiFetch("/auth/login", { method: "POST", body: { email, password } }),
     logout: () => apiFetch("/auth/logout", { method: "POST" }),
+    register: (payload) => apiFetch("/auth/register", { method: "POST", body: payload }),
     me: () => apiFetch("/auth/me"),
     rooms: () => apiFetch("/rooms"),
     availability: (roomId, date) => apiFetch(`/rooms/${roomId}/availability?date=${encodeURIComponent(date)}`),
