@@ -11,34 +11,32 @@ const state = {
 
   selectedSlot: null, // { startAt, endAt }
   lastReservedStartAt: null,
+
   reservations: [],
   reservationsLoading: false,
+
   roomsError: "",
   roomsLoading: false,
   availabilityLoading: false,
+
   ui: {
     showBusy: true,
     showPast: false,
+    authMode: "login", // "login" | "register"
   },
 
+  cancelTargetId: null,
 };
 
+// ------------------ Helpers UI ------------------
 function roomImage(name) {
   const n = String(name || "").trim().toLowerCase();
-
   if (n === "sala a") return "/rooms/room-a.jpg";
   if (n === "sala b") return "/rooms/room-b.jpg";
-
   return "/rooms/placeholder.jpg";
 }
 
-function fmtRole(role) {
-  if (!role) return "—";
-  return role === "ADMIN" ? "Administrador" : "Usuario";
-}
-
 function fmtHM(iso) {
-  // iso puede venir con timezone Z; lo mostramos en hora local del navegador
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
@@ -47,38 +45,81 @@ function selectedRoom() {
   return state.rooms.find((r) => r.id === state.selectedRoomId) ?? null;
 }
 
-function openModal() {
-  el("#modalOverlay").classList.add("open");
-  el("body").classList.add("noScroll");
-}
-
-function closeModal() {
-  el("#modalOverlay").classList.remove("open");
-  el("body").classList.remove("noScroll");
-  state.selectedSlot = null;
+function canReserve() {
+  return !!(state.me?.user?.id);
 }
 
 function setMessage(kind, text) {
   const box = el("#msgBox");
+  if (!box) return;
   box.className = `notice ${kind === "ok" ? "ok" : kind === "err" ? "err" : ""}`;
   box.textContent = text;
 }
 
-//! Cargar usuario actual
-async function loadMe() {
+// ------------------ Modal ------------------
+function openModal() {
+  el("#modalOverlay")?.classList.add("open");
+  el("body")?.classList.add("noScroll");
+}
+
+function closeModal() {
+  el("#modalOverlay")?.classList.remove("open");
+  el("body")?.classList.remove("noScroll");
+
+  state.selectedSlot = null;
+  state.cancelTargetId = null;
+
+  // restaurar botón modal a modo reserva
+  const btn = el("#btnConfirmReserve");
+  if (btn) {
+    btn.textContent = "Confirmar reserva";
+    btn.classList.remove("btnDanger");
+    btn.classList.add("btnPrimary");
+  }
+}
+
+function openCancelModal(reservationId) {
+  state.cancelTargetId = reservationId;
+
+  el("#modalTitle").textContent = "Confirmar cancelación";
+  el("#modalBody").innerHTML = `
+    <div class="notice err">
+      <strong>Esta acción es definitiva.</strong><br/>
+      Al cancelar, la reserva queda anulada y el horario podría no estar disponible después.
+    </div>
+
+    <div class="notice" style="margin-top:10px;">
+      ¿Desea continuar?
+    </div>
+  `;
+
+  const btn = el("#btnConfirmReserve");
+  btn.textContent = "Sí, cancelar";
+  btn.classList.add("btnDanger");
+  btn.classList.remove("btnPrimary");
+
+  openModal();
+}
+
+// ------------------ API loads ------------------
+async function loadMe({ silentNoSession = false } = {}) {
   try {
     const data = await api.me();
     state.me = data;
     setMessage("ok", "Sesión iniciada correctamente.");
   } catch (e) {
     state.me = null;
-    setMessage("err", "Usted no ha iniciado sesión.");
+    if (!silentNoSession) {
+      setMessage("err", "Usted no ha iniciado sesión.");
+    } else {
+      // mensaje neutro al inicio (o no pongas nada)
+      setMessage("ok", "Listo.");
+    }
   } finally {
     render();
   }
 }
 
-//! Cargar lista de salas
 async function loadRooms() {
   state.roomsLoading = true;
   state.roomsError = "";
@@ -106,11 +147,13 @@ async function loadRooms() {
   }
 }
 
-
-//! Cargar disponibilidad de la sala seleccionada
 async function loadAvailability({ silent = false } = {}) {
   const date = el("#dateInput")?.value ?? "";
 
+  if (!canReserve()) {
+    if (!silent) setMessage("err", "Inicie sesión para ver horarios.");
+    return;
+  }
   if (!state.selectedRoomId) {
     if (!silent) setMessage("err", "Por favor, seleccione una sala.");
     return;
@@ -129,7 +172,6 @@ async function loadAvailability({ silent = false } = {}) {
     if (!silent) setMessage("ok", "Horarios cargados.");
   } catch (e) {
     state.availability = null;
-
     if (e?.code === "TIMEOUT") {
       if (!silent) setMessage("err", "El servicio tardó demasiado. Intente nuevamente.");
     } else {
@@ -141,7 +183,6 @@ async function loadAvailability({ silent = false } = {}) {
   }
 }
 
-//! Cargar mis reservas
 async function loadMyReservations({ silent = false } = {}) {
   if (!canReserve()) {
     state.reservations = [];
@@ -154,8 +195,6 @@ async function loadMyReservations({ silent = false } = {}) {
 
   try {
     const data = await api.myReservations();
-    console.log("[myReservations] raw:", data);
-
     const items =
       Array.isArray(data) ? data :
         Array.isArray(data?.reservations) ? data.reservations :
@@ -164,7 +203,6 @@ async function loadMyReservations({ silent = false } = {}) {
               [];
 
     state.reservations = items;
-
     if (!silent) setMessage("ok", `Reservas actualizadas (${items.length}).`);
   } catch (e) {
     state.reservations = [];
@@ -173,61 +211,43 @@ async function loadMyReservations({ silent = false } = {}) {
     state.reservationsLoading = false;
     render();
   }
-  console.log("[myReservations] sample:", state.reservations?.[0]);
 }
 
-
-//! Iniciar sesión
+// ------------------ Auth actions ------------------
 async function onLogin() {
-  const email = el("#email").value.trim();
-  const password = el("#password").value;
+  const email = el("#email")?.value.trim();
+  const password = el("#password")?.value;
 
   if (!email || !password) {
     setMessage("err", "Por favor, ingrese su correo y contraseña.");
     return;
   }
 
-  // 1) Login (solo aquí aplica “credenciales”)
   try {
     setMessage("ok", "Iniciando sesión…");
     await api.login(email, password);
   } catch (e) {
-    // Aquí sí: credenciales / login
-    if (e.status === 401) {
-      setMessage("err", "No se pudo iniciar sesión. Verifique su correo y contraseña.");
-    } else {
-      setMessage("err", `No se pudo iniciar sesión (${e.status ?? "?"}).`);
-    }
+    if (e.status === 401) setMessage("err", "No se pudo iniciar sesión. Verifique su correo y contraseña.");
+    else setMessage("err", `No se pudo iniciar sesión (${e.status ?? "?"}).`);
     return;
   }
 
-  // 2) Cargar sesión (si esto falla, NO son credenciales; es cookie/CORS)
-  try {
-    await loadMe();
-  } catch {
-    // loadMe ya pone mensaje, pero por si acaso:
-    setMessage("err", "No se pudo confirmar la sesión. Intente nuevamente.");
-    return;
-  }
+  await loadMe();
 
-  // 3) Cargar datos de la app
-  try {
+  // si ya hay sesión, carga datos
+  if (canReserve()) {
     await loadRooms();
     await loadMyReservations({ silent: true });
     setMessage("ok", "Sesión iniciada correctamente.");
-  } catch (e) {
-    console.error("[post-login] error:", e);
-    setMessage("err", "Sesión iniciada, pero no se pudieron cargar todos los datos. Intente actualizar.");
   }
 }
 
-//! Registrar usuario
 async function onRegister() {
-  const email = el("#regEmail").value.trim();
-  const password = el("#regPassword").value;
-  const fullName = el("#regFullName").value.trim();
+  const fullName = el("#regFullName")?.value.trim();
+  const email = el("#regEmail")?.value.trim();
+  const password = el("#regPassword")?.value;
 
-  if (!email || !password || !fullName) {
+  if (!fullName || !email || !password) {
     setMessage("err", "Complete nombre, correo y contraseña para registrarse.");
     return;
   }
@@ -238,21 +258,22 @@ async function onRegister() {
 
     setMessage("ok", "Cuenta creada. Iniciando sesión…");
     await api.login(email, password);
+
     await loadMe();
-    await loadRooms();
-    await loadMyReservations({ silent: true });
+
+    if (canReserve()) {
+      await loadRooms();
+      await loadMyReservations({ silent: true });
+    }
 
     setMessage("ok", "Registro exitoso. Sesión iniciada correctamente.");
   } catch (e) {
-    // Ajusta según códigos reales del backend
     if (e.status === 409) setMessage("err", "Ese correo ya está registrado.");
     else if (e.status === 400) setMessage("err", "Datos inválidos. Revise e intente de nuevo.");
     else setMessage("err", `No se pudo registrar (${e.status ?? "?"}).`);
   }
 }
 
-
-//! Cerrar sesión
 async function onLogout() {
   try {
     await api.logout();
@@ -261,24 +282,33 @@ async function onLogout() {
     setMessage("err", "No se pudo cerrar la sesión. Intente de nuevo.");
   } finally {
     state.me = null;
+
+    state.rooms = [];
+    state.roomsError = "";
+    state.roomsLoading = false;
+
+    state.selectedRoomId = "";
     state.availability = null;
+    state.availabilityLoading = false;
+
     state.selectedSlot = null;
+    state.lastReservedStartAt = null;
+
     state.reservations = [];
     state.reservationsLoading = false;
+
+    state.ui.authMode = "login";
 
     render();
   }
 }
 
-//! Cancelar reserva
+// ------------------ Reservation actions ------------------
 async function cancelReservation(id) {
   if (!canReserve()) {
     setMessage("err", "Usted debe iniciar sesión para cancelar.");
     return;
   }
-
-  const ok = confirm("¿Desea cancelar esta reserva?");
-  if (!ok) return;
 
   try {
     setMessage("ok", "Cancelando…");
@@ -298,19 +328,16 @@ async function cancelReservation(id) {
     } else if (e.status === 404) {
       setMessage("err", "La reserva ya no existe.");
     } else if (e.status === 409) {
-      setMessage("err", "No se pudo cancelar en este momento. Intente de nuevo.");
+      // tu backend manda “Muy tarde…”
+      setMessage("err", e.message || "Muy tarde para cancelar esta reserva.");
     } else {
       setMessage("err", `No se pudo cancelar la reserva (${e.status ?? "?"}).`);
     }
   }
 }
 
-//! Check-In
 async function doCheckIn(id) {
-  if (!canReserve()) {
-    setMessage("err", "Usted debe iniciar sesión para registrar entrada.");
-    return;
-  }
+  if (!canReserve()) return setMessage("err", "Usted debe iniciar sesión para registrar entrada.");
 
   const ok = confirm("¿Desea registrar Check-In para esta reserva?");
   if (!ok) return;
@@ -320,9 +347,7 @@ async function doCheckIn(id) {
     await api.checkIn(id);
     setMessage("ok", "Check-In registrado.");
     await loadMyReservations({ silent: true });
-    if (state.selectedRoomId && el("#dateInput")?.value) {
-      await loadAvailability({ silent: true });
-    }
+    if (state.selectedRoomId && el("#dateInput")?.value) await loadAvailability({ silent: true });
   } catch (e) {
     console.error("[checkin] error:", e);
     if (e.status === 401) setMessage("err", "Su sesión expiró. Inicie sesión nuevamente.");
@@ -330,12 +355,8 @@ async function doCheckIn(id) {
   }
 }
 
-//! Check-Out
 async function doCheckOut(id) {
-  if (!canReserve()) {
-    setMessage("err", "Usted debe iniciar sesión para registrar salida.");
-    return;
-  }
+  if (!canReserve()) return setMessage("err", "Usted debe iniciar sesión para registrar salida.");
 
   const ok = confirm("¿Desea registrar Check-Out para esta reserva?");
   if (!ok) return;
@@ -345,9 +366,7 @@ async function doCheckOut(id) {
     await api.checkOut(id);
     setMessage("ok", "Check-Out registrado.");
     await loadMyReservations({ silent: true });
-    if (state.selectedRoomId && el("#dateInput")?.value) {
-      await loadAvailability({ silent: true });
-    }
+    if (state.selectedRoomId && el("#dateInput")?.value) await loadAvailability({ silent: true });
   } catch (e) {
     console.error("[checkout] error:", e);
     if (e.status === 401) setMessage("err", "Su sesión expiró. Inicie sesión nuevamente.");
@@ -355,35 +374,25 @@ async function doCheckOut(id) {
   }
 }
 
-function canReserve() {
-  return !!(state.me?.user?.id);
-}
-
+// ------------------ Reserve modal flow ------------------
 function pickSlot(slot) {
-  // slot = {startAt, endAt, available}
   if (!slot.available) return;
-
-  if (!canReserve()) {
-    setMessage("err", "Necesitas iniciar sesión para reservar.");
-    return;
-  }
+  if (!canReserve()) return setMessage("err", "Necesitas iniciar sesión para reservar.");
 
   state.selectedSlot = { startAt: slot.startAt, endAt: slot.endAt };
-  renderModal();
+  renderReserveModal();
   openModal();
 }
 
-function renderModal() {
+function renderReserveModal() {
   const room = selectedRoom();
   const s = state.selectedSlot;
-
   if (!room || !s) {
     el("#modalBody").innerHTML = `<div class="notice">No hay datos para reservar.</div>`;
     return;
   }
 
   const date = el("#dateInput").value;
-
   el("#modalTitle").textContent = "Confirmar reserva";
 
   el("#modalBody").innerHTML = `
@@ -412,6 +421,54 @@ function renderModal() {
   `;
 }
 
+async function confirmReserve() {
+  const roomId = state.selectedRoomId;
+  const slot = state.selectedSlot;
+
+  if (!roomId || !slot) return setMessage("err", "No hay slot seleccionado.");
+  if (!canReserve()) return setMessage("err", "Necesitas iniciar sesión para reservar.");
+
+  const btn = el("#btnConfirmReserve");
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Reservando…";
+    }
+
+    await api.reserve({ roomId, startAt: slot.startAt, endAt: slot.endAt });
+
+    setMessage("ok", "Reserva creada.");
+    closeModal();
+
+    await loadAvailability({ silent: true });
+    await loadMyReservations({ silent: true });
+
+    state.lastReservedStartAt = slot.startAt;
+  } catch (e) {
+    if (e.status === 401) setMessage("err", "Tu sesión expiró. Vuelve a iniciar sesión.");
+    else if (e.status === 409) setMessage("err", e.message || "Ese horario ya fue reservado. Elige otro.");
+    else setMessage("err", "No se pudo completar la reserva. Intenta de nuevo.");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = state.cancelTargetId ? "Sí, cancelar" : "Confirmar reserva";
+    }
+  }
+}
+
+async function onModalConfirm() {
+  // si estamos cancelando
+  if (state.cancelTargetId) {
+    const id = state.cancelTargetId;
+    await cancelReservation(id);
+    closeModal();
+    return;
+  }
+  // si estamos reservando
+  await confirmReserve();
+}
+
+// ------------------ Reservations rendering ------------------
 function getCheckTimes(r) {
   const checkInAt = r.checkInAt || r.checkedInAt || r.check_in_at || r.checkinAt || null;
   const checkOutAt = r.checkOutAt || r.checkedOutAt || r.check_out_at || r.checkoutAt || null;
@@ -423,30 +480,25 @@ function reservationOutcomeText(r) {
   const { checkInAt, checkOutAt } = getCheckTimes(r);
 
   const now = new Date();
-  const start = new Date(r.startAt);
   const end = new Date(r.endAt);
 
-  // 1) Si backend ya marca FINISHED o hay check-in + check-out => Realizada
-  if (status === "FINISHED" || status === "FINISHED" || (checkInAt && checkOutAt)) {
-    return { label: "Realizada", reason: "" };
+  // Si el backend marca FINISHED o hay checkOut => Finalizada
+  if (status === "FINISHED" || checkOutAt) {
+    return { label: "Finalizada", reason: "" };
   }
 
-
-  // 2) Si está cancelada, no inventamos razones
   if (status === "CANCELLED") {
     return { label: "Cancelada", reason: "" };
   }
 
-  // 3) Si ya pasó el fin de la reserva y no se completó, damos razon
+  // si ya terminó y no se completó:
   if (now > end) {
-    // caso: nunca hizo check-in
     if (!checkInAt) {
       return {
         label: "Perdida",
         reason: "Se perdió porque no se registró Check-In dentro del horario de la reserva.",
       };
     }
-    // caso: hizo check-in pero no check-out
     if (!checkOutAt) {
       return {
         label: "Incompleta",
@@ -455,7 +507,6 @@ function reservationOutcomeText(r) {
     }
   }
 
-  // 4) Si aún no termina, dejamos estados normales
   if (status === "IN_PROGRESS") return { label: "En curso", reason: "" };
   return { label: "Activa", reason: "" };
 }
@@ -463,22 +514,14 @@ function reservationOutcomeText(r) {
 function startOfLocalDay(d = new Date()) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
 }
-
 function endOfLocalDay(d = new Date()) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 }
-
-function sortByStartAsc(a, b) {
-  return new Date(a.startAt) - new Date(b.startAt);
-}
-function sortByStartDesc(a, b) {
-  return new Date(b.startAt) - new Date(a.startAt);
-}
+function sortByStartAsc(a, b) { return new Date(a.startAt) - new Date(b.startAt); }
+function sortByStartDesc(a, b) { return new Date(b.startAt) - new Date(a.startAt); }
 
 function reservationCard(r) {
   const status = (r.status ?? "CONFIRMED").toString().toUpperCase();
-  const start = new Date(r.startAt);
-  const end = new Date(r.endAt);
 
   const roomName =
     r.room?.name ||
@@ -489,8 +532,8 @@ function reservationCard(r) {
   const outcome = reservationOutcomeText(r);
 
   const badge =
-    outcome.label === "Realizada"
-      ? `<span class="badge ok">Realizada</span>`
+    outcome.label === "Finalizada"
+      ? `<span class="badge ok">Finalizada</span>`
       : outcome.label === "Perdida"
         ? `<span class="badge off">Perdida</span>`
         : outcome.label === "Incompleta"
@@ -501,12 +544,12 @@ function reservationCard(r) {
               ? `<span class="badge ok">En curso</span>`
               : `<span class="badge ok">Activa</span>`;
 
-  // Botones status/outcome
+  // Botones correctos
   const canCancel = status === "CONFIRMED" && outcome.label === "Activa";
   const canCheckIn = status === "CONFIRMED" && outcome.label === "Activa";
   const canCheckOut = status === "IN_PROGRESS" && outcome.label === "En curso";
 
-  const dateStr = start.toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" });
+  const dateStr = new Date(r.startAt).toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" });
   const timeStr = `${dateStr} • ${fmtHM(r.startAt)} - ${fmtHM(r.endAt)}`;
 
   return `
@@ -517,9 +560,7 @@ function reservationCard(r) {
           ${badge}
         </div>
         <div class="small muted">${timeStr}</div>
-
         ${outcome.reason ? `<div class="small" style="margin-top:6px;"><strong>Motivo:</strong> ${outcome.reason}</div>` : ``}
-
         <div class="small muted">id: ${(r.id ?? "").slice(0, 8)}…</div>
       </div>
 
@@ -556,14 +597,8 @@ function reservationsSection(title, items, emptyText) {
 }
 
 function renderReservations() {
-  const me = state.me?.user ?? null;
-
-  if (!me) {
-    return `
-      <div class="notice">
-        Inicie sesión para ver <strong>Mis reservas</strong>.
-      </div>
-    `;
+  if (!canReserve()) {
+    return `<div class="notice">Inicie sesión para ver <strong>Mis reservas</strong>.</div>`;
   }
 
   if (state.reservationsLoading) {
@@ -590,13 +625,13 @@ function renderReservations() {
 
     const isEnded = now > end;
 
-    // Regla 1: si ya terminó (aunque sea hoy) => Pasadas
+    // Regla: si ya terminó => Pasadas
     if (isEnded) {
       past.push(r);
       continue;
     }
 
-    // Regla 2: finalizada/cancelada/perdida/incompleta => Pasadas (aunque no haya terminado, por si backend lo marca)
+    // Si backend ya la marcó finalizada/cancelada/perdida/incompleta => Pasadas
     if (
       outcome.label === "Finalizada" ||
       outcome.label === "Cancelada" ||
@@ -607,16 +642,12 @@ function renderReservations() {
       continue;
     }
 
-    // Si todavía no termina:
     const touchesToday = (start <= todayEnd && end >= today0);
     if (touchesToday) today.push(r);
     else if (start > todayEnd) upcoming.push(r);
     else past.push(r);
   }
 
-
-
-  // UX: Hoy y Próximas ascendente; Pasadas descendente (más recientes arriba)
   today.sort(sortByStartAsc);
   upcoming.sort(sortByStartAsc);
   past.sort(sortByStartDesc);
@@ -628,55 +659,7 @@ function renderReservations() {
   `;
 }
 
-async function confirmReserve() {
-  const roomId = state.selectedRoomId;
-  const slot = state.selectedSlot;
-
-  if (!roomId || !slot) {
-    setMessage("err", "No hay slot seleccionado.");
-    return;
-  }
-  if (!canReserve()) {
-    setMessage("err", "Necesitas iniciar sesión para reservar.");
-    return;
-  }
-
-  try {
-    const btn = el("#btnConfirmReserve");
-    btn.disabled = true;
-    btn.textContent = "Reservando…";
-
-    console.log("[reserve] sending:", { roomId, startAt: slot.startAt, endAt: slot.endAt });
-
-    const resp = await api.reserve({
-      roomId,
-      startAt: slot.startAt,
-      endAt: slot.endAt,
-    });
-    console.log("[reserve] response:", resp);
-    setMessage("ok", "Reserva creada.");
-    closeModal();
-    await loadAvailability({ silent: true });
-    await loadMyReservations({ silent: true });
-    state.lastReservedStartAt = slot.startAt;
-  } catch (e) {
-    if (e.status === 401) {
-      setMessage("err", "Tu sesión expiró. Vuelve a iniciar sesión.");
-    } else if (e.status === 409) {
-      setMessage("err", "Ese horario ya fue reservado. Elige otro.");
-    } else {
-      setMessage("err", "No se pudo completar la reserva. Intenta de nuevo.");
-    }
-
-  } finally {
-    const btn = el("#btnConfirmReserve");
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = "Confirmar reserva";
-    }
-  }
-}
-
+// ------------------ Availability rendering helpers ------------------
 function ymdLocal(d = new Date()) {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
@@ -686,51 +669,73 @@ function ymdLocal(d = new Date()) {
 
 function isTodaySelected() {
   const input = el("#dateInput");
-  if (!input) return false;          // si todavía no existe en DOM
+  if (!input) return false;
   const selected = input.value;
   return selected && selected === ymdLocal(new Date());
 }
 
+// ------------------ MAIN RENDER ------------------
 function render() {
-  if (!state.ui) state.ui = { showBusy: true, showPast: false };
+  if (!state.ui) state.ui = { showBusy: true, showPast: false, authMode: "login" };
   if (typeof state.availabilityLoading !== "boolean") state.availabilityLoading = false;
+
   const me = state.me?.user ?? null;
+  const logged = !!me;
 
-  // Pills del topbar
-  el("#pillStatus").innerHTML = me
-    ? `<strong>Conectado</strong>`
-    : `<strong>Invitado</strong>`;
-
-  el("#pillUser").innerHTML = me
-    ? `<strong>${me.email}</strong>`
-    : `<strong>Inicie sesión</strong>`;
-
-  el("#pillRole").innerHTML = me
+  // Pills
+  el("#pillStatus").innerHTML = logged ? `<strong>Conectado</strong>` : `<strong>Invitado</strong>`;
+  el("#pillUser").innerHTML = logged ? `<strong>${me.email}</strong>` : `<strong>Inicie sesión</strong>`;
+  el("#pillRole").innerHTML = logged
     ? `<strong>${me.role === "ADMIN" ? "Administrador" : "Usuario"}</strong>`
     : `<strong>—</strong>`;
 
-
-  // Panel /auth/me
-  el("#meBox").innerHTML = me
+  // Me box
+  el("#meBox").innerHTML = logged
     ? `
-    <div class="notice ok">
-      <strong>Tu cuenta</strong><br/>
-      <span class="small">Sesión activa como:</span><br/>
-      <span><strong>${me.email}</strong></span><br/>
-      <span class="small">Rol: ${me.role === "ADMIN" ? "Administrador" : "Usuario"}</span>
-    </div>
-  `
+      <div class="notice ok">
+        <strong>Tu cuenta</strong><br/>
+        <span class="small">Sesión activa como:</span><br/>
+        <span><strong>${me.email}</strong></span><br/>
+        <span class="small">Rol: ${me.role === "ADMIN" ? "Administrador" : "Usuario"}</span>
+      </div>
+    `
     : `
-    <div class="notice">
-      <strong>Bienvenido</strong><br/>
-      <span class="small">Inicie sesión para reservar una sala y consultar tus reservas.</span>
-    </div>
-  `;
+      <div class="notice">
+        <strong>Bienvenido</strong><br/>
+        <span class="small">Inicie sesión para reservar una sala y consultar sus reservas.</span>
+      </div>
+    `;
+
+  // ====== VIEW SWITCH (CLAVE) ======
+  const authView = el("#authView");
+  const appView = el("#appView");
+  const roomsView = el("#roomsView");
+  const registerSection = el("#registerSection");
+
+  if (authView) authView.style.display = logged ? "none" : "block";
+  if (appView) appView.style.display = logged ? "block" : "none";
+  if (roomsView) roomsView.style.display = logged ? "block" : "none";
+
+  // auth mode: login/register
+  if (!logged) {
+    if (registerSection) registerSection.style.display = state.ui.authMode === "register" ? "block" : "none";
+
+    const btnGoRegister = el("#btnGoRegister");
+    const btnGoLogin = el("#btnGoLogin");
+
+    if (btnGoRegister) btnGoRegister.style.display = state.ui.authMode === "login" ? "inline-flex" : "none";
+    if (btnGoLogin) btnGoLogin.style.display = state.ui.authMode === "register" ? "inline-flex" : "none";
+
+    // IMPORTANTE: cortar para NO renderizar APP
+    return;
+  }
+
+  // ---- APP VIEW render (solo si logged) ----
   // Mis reservas
   const rb = el("#reservationsBox");
   if (rb) rb.innerHTML = renderReservations();
 
-  // Lista rooms
+  // Rooms
   const roomsHtml = state.rooms
     .map((r) => {
       const img = roomImage(r.name);
@@ -739,35 +744,35 @@ function render() {
       const isSelected = r.id === state.selectedRoomId;
 
       return `
-      <div class="roomCard ${isSelected ? "selected" : ""}">
-        <div class="roomImg">
-          <img src="${img}" alt="${r.name}" onerror="this.src='/rooms/placeholder.jpg'"/>
+        <div class="roomCard ${isSelected ? "selected" : ""}">
+          <div class="roomImg">
+            <img src="${img}" alt="${r.name}" onerror="this.src='/rooms/placeholder.jpg'"/>
+          </div>
+          <div class="roomMeta">
+            <div class="roomTitle">
+              <h3>${r.name}</h3>
+              <span class="badge ${badgeClass}">${badgeText}</span>
+            </div>
+
+            <div class="roomDetails">
+              <span class="kv">Capacidad: <strong>${r.capacity}</strong></span>
+              <span class="kv">Slot: <strong>${r.slotMinutes ?? 60} min</strong></span>
+            </div>
+
+            <hr class="sep"/>
+
+            <div class="row">
+              <button class="btn btnPrimary" data-select-room="${r.id}">
+                ${isSelected ? "Seleccionada" : "Ver disponibilidad"}
+              </button>
+              <span class="small">ID: ${r.id.slice(0, 8)}…</span>
+            </div>
+          </div>
         </div>
-        <div class="roomMeta">
-          <div class="roomTitle">
-            <h3>${r.name}</h3>
-            <span class="badge ${badgeClass}">${badgeText}</span>
-          </div>
-
-          <div class="roomDetails">
-            <span class="kv">Capacidad: <strong>${r.capacity}</strong></span>
-            <span class="kv">Slot: <strong>${r.slotMinutes ?? 60} min</strong></span>
-          </div>
-
-          <hr class="sep"/>
-
-          <div class="row">
-            <button class="btn btnPrimary" data-select-room="${r.id}">
-              ${isSelected ? "Seleccionada" : "Ver disponibilidad"}
-            </button>
-            <span class="small">ID: ${r.id.slice(0, 8)}…</span>
-          </div>
-        </div>
-      </div>
-    `;
+      `;
     })
     .join("");
-  const roomsGrid = el("#roomsGrid");
+
   const roomsHeader = state.roomsLoading
     ? `<div class="notice">Cargando salas…</div>`
     : state.roomsError
@@ -776,63 +781,52 @@ function render() {
 
   el("#roomsGrid").innerHTML = roomsHeader + (roomsHtml || `<div class="notice">No hay salas disponibles.</div>`);
 
-
-  //! Availability
   // Availability
   const av = state.availability;
   const todaySelected = isTodaySelected();
 
-  // defaults UX: si es hoy, por defecto ocultamos pasados
-  if (todaySelected && state.ui.showPast === false) {
-    // ok, default
-  }
-
   if (!state.selectedRoomId) {
     el("#availabilityBox").innerHTML = `
-    <div class="notice">
-      Seleccione una sala para ver sus horarios disponibles.
-    </div>
-  `;
+      <div class="notice">
+        Seleccione una sala para ver sus horarios disponibles.
+      </div>
+    `;
   } else if (state.availabilityLoading && !av) {
     el("#availabilityBox").innerHTML = `
-    <div class="notice">Cargando horarios…</div>
-    <div class="slotsGrid" style="margin-top:10px;">
-      ${Array.from({ length: 8 }).map(() => `
-        <div class="slot busy" style="opacity:.55; pointer-events:none;">
-          <div class="slotTime">—:— - —:—</div>
-          <div class="slotBadge"><span class="badge">Cargando</span></div>
-        </div>
-      `).join("")}
-    </div>
-  `;
+      <div class="notice">Cargando horarios…</div>
+      <div class="slotsGrid" style="margin-top:10px;">
+        ${Array.from({ length: 8 }).map(() => `
+          <div class="slot busy" style="opacity:.55; pointer-events:none;">
+            <div class="slotTime">—:— - —:—</div>
+            <div class="slotBadge"><span class="badge">Cargando</span></div>
+          </div>
+        `).join("")}
+      </div>
+    `;
   } else if (!av) {
     el("#availabilityBox").innerHTML = `
-    <div class="notice">
-      Elija una fecha y pulse <strong>Ver horarios</strong>.
-    </div>
-  `;
+      <div class="notice">
+        Elija una fecha y pulse <strong>Ver horarios</strong>.
+      </div>
+    `;
   } else if (av.closed) {
     el("#availabilityBox").innerHTML = `
-    <div class="notice err">
-      <strong>No disponible</strong><br/>
-      Esta sala no está abierta en la fecha seleccionada.
-    </div>
-  `;
+      <div class="notice err">
+        <strong>No disponible</strong><br/>
+        Esta sala no está abierta en la fecha seleccionada.
+      </div>
+    `;
   } else {
     const room = selectedRoom();
-
     let slots = av.slots ?? [];
     const now = new Date();
 
-    // 1) Ocultar pasados si la fecha es hoy y showPast = false
+    // ocultar pasados si hoy y showPast false
     if (todaySelected && !state.ui.showPast) {
-      slots = slots.filter((s) => {
-        const start = new Date(s.startAt);
-        return start > now;
-      });
+      slots = slots.filter((s) => new Date(s.startAt) > now);
     }
 
-    // 2) Mostrar/ocultar ocupados
+    // ocultar ocupados si showBusy false
     if (!state.ui.showBusy) {
       slots = slots.filter((s) => s.available);
     }
@@ -841,29 +835,29 @@ function render() {
     const freeCount = slots.filter((s) => s.available).length;
 
     const controls = `
-    <div class="row" style="justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-      <div class="small muted">
-        ${av.timezone} • Slot ${av.slotMinutes} min • Libres: <strong>${freeCount}</strong>
-        ${todaySelected && !state.ui.showPast ? `<span class="small muted">• Horarios pasados ocultos</span>` : ``}
+      <div class="row" style="justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
+        <div class="small muted">
+          ${av.timezone} • Slot ${av.slotMinutes} min • Libres: <strong>${freeCount}</strong>
+          ${todaySelected && !state.ui.showPast ? `<span class="small muted">• Horarios pasados ocultos</span>` : ``}
+        </div>
+
+        <div class="row" style="gap:10px; flex-wrap:wrap;">
+          <label class="small" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="toggleBusy" ${state.ui.showBusy ? "checked" : ""}/>
+            Mostrar ocupados
+          </label>
+
+          <label class="small" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
+            <input type="checkbox" id="togglePast" ${state.ui.showPast ? "checked" : ""}/>
+            Mostrar pasados
+          </label>
+
+          <button class="btn" id="btnNextFree" ${freeCount ? "" : "disabled"}>
+            Siguiente libre
+          </button>
+        </div>
       </div>
-
-      <div class="row" style="gap:10px; flex-wrap:wrap;">
-        <label class="small" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-          <input type="checkbox" id="toggleBusy" ${state.ui.showBusy ? "checked" : ""}/>
-          Mostrar ocupados
-        </label>
-
-        <label class="small" style="display:flex; align-items:center; gap:6px; cursor:pointer;">
-          <input type="checkbox" id="togglePast" ${state.ui.showPast ? "checked" : ""}/>
-          Mostrar pasados
-        </label>
-
-        <button class="btn" id="btnNextFree" ${freeCount ? "" : "disabled"}>
-          Siguiente libre
-        </button>
-      </div>
-    </div>
-  `;
+    `;
 
     const slotsGrid = slots.map((s) => {
       const wasJustReserved = state.lastReservedStartAt === s.startAt;
@@ -878,24 +872,19 @@ function render() {
       let badgeClass = "";
       let availableForPick = false;
 
-      // 1) pasados visibles => siempre "No disponible"
       if (pastIsVisible) {
         clsBase += " busy";
         disabled = "disabled";
         badgeText = "No disponible";
         badgeClass = "off";
         availableForPick = false;
-      }
-      // 2) ocupado
-      else if (!s.available) {
+      } else if (!s.available) {
         clsBase += " busy";
         disabled = "disabled";
         badgeText = "Ocupada";
         badgeClass = "off";
         availableForPick = false;
-      }
-      // 3) libre
-      else {
+      } else {
         clsBase += " free";
         badgeText = "Libre";
         badgeClass = "ok";
@@ -905,49 +894,44 @@ function render() {
       const cls = wasJustReserved ? `${clsBase} justReserved` : clsBase;
 
       return `
-    <button class="${cls}" ${disabled}
-      data-slot-start="${s.startAt}"
-      data-slot-end="${s.endAt}"
-      data-slot-available="${availableForPick ? "1" : "0"}"
-      title="${badgeText}">
-      <div class="slotTime">
-        ${fmtHM(s.startAt)} - ${fmtHM(s.endAt)}
-      </div>
-      <div class="slotBadge">
-        <span class="badge ${badgeClass}">${badgeText}</span>
-      </div>
-    </button>
-  `;
+        <button class="${cls}" ${disabled}
+          data-slot-start="${s.startAt}"
+          data-slot-end="${s.endAt}"
+          data-slot-available="${availableForPick ? "1" : "0"}"
+          title="${badgeText}">
+          <div class="slotTime">${fmtHM(s.startAt)} - ${fmtHM(s.endAt)}</div>
+          <div class="slotBadge"><span class="badge ${badgeClass}">${badgeText}</span></div>
+        </button>
+      `;
     }).join("");
 
-
     el("#availabilityBox").innerHTML = `
-      <div class="avHeader" >
-      <div>
-        <div class="avTitle">
-          <strong>Horarios • ${room?.name ?? "Sala"}</strong>
-          <span class="small">• ${av.date} • ${av.openAt}–${av.closeAt}</span>
+      <div class="avHeader">
+        <div>
+          <div class="avTitle">
+            <strong>Horarios • ${room?.name ?? "Sala"}</strong>
+            <span class="small">• ${av.date} • ${av.openAt}–${av.closeAt}</span>
+          </div>
+        </div>
+        <div class="avActions">
+          <span class="badge ${canReserve() ? "ok" : "off"}">
+            ${canReserve() ? "Puede reservar" : "Inicie sesión para reservar"}
+          </span>
         </div>
       </div>
-      <div class="avActions">
-        <span class="badge ${canReserve() ? "ok" : "off"}">
-          ${canReserve() ? "Puede reservar" : "Inicie sesión para reservar"}
-        </span>
-      </div >
-    </div >
 
       ${controls}
 
-    <div class="slotsGrid" style="margin-top:10px;">
-      ${totalShown ? slotsGrid : `<div class="notice">No hay horarios para mostrar con los filtros actuales.</div>`}
-    </div>
+      <div class="slotsGrid" style="margin-top:10px;">
+        ${totalShown ? slotsGrid : `<div class="notice">No hay horarios para mostrar con los filtros actuales.</div>`}
+      </div>
 
-    <div class="small muted" style="margin-top:10px;">
-      Seleccione un horario <strong>Libre</strong> para continuar.
-    </div>
+      <div class="small muted" style="margin-top:10px;">
+        Seleccione un horario <strong>Libre</strong> para continuar.
+      </div>
     `;
 
-    // Bind toggles + next free (una sola vez por render del availability)
+    // binds toggles
     const tBusy = el("#toggleBusy");
     if (tBusy) {
       tBusy.addEventListener("change", () => {
@@ -973,13 +957,12 @@ function render() {
     }
   }
 
-
-  // Bind room buttons
+  // room buttons bind
   document.querySelectorAll("[data-select-room]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.getAttribute("data-select-room");
       state.selectedRoomId = id;
-      state.availability = null; // limpia vista anterior para evitar confusión
+      state.availability = null;
       render();
       await loadAvailability({ silent: false });
       el("#availabilityBox")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -987,121 +970,108 @@ function render() {
   });
 }
 
-function humanError(e, fallback = "Ocurrió un error. Intente de nuevo.") {
-  const status = e?.status;
-
-  // Mensajes “producto” por status
-  if (status === 0 && e?.code === "TIMEOUT") return "El servidor tardó demasiado en responder. Intente nuevamente.";
-  if (status === 400) return "La solicitud no es válida. Revise los datos e intente de nuevo.";
-  if (status === 401) return "Su sesión expiró. Inicie sesión nuevamente.";
-  if (status === 403) return "Usted no tiene permisos para realizar esta acción.";
-  if (status === 404) return "No se encontró el recurso solicitado.";
-  if (status === 409) return "Ese horario ya no está disponible. Por favor, elija otro.";
-  if (status === 422) return "No se pudo completar la acción por reglas del sistema. Revise e intente de nuevo.";
-  if (status >= 500) return "El servicio no está disponible en este momento. Intente más tarde.";
-  // Mensajes específicos del backend
-  if (e?.message && typeof e.message === "string" && e.message.trim()) return e.message;
-
-  return fallback;
-}
-
+// ------------------ Boot ------------------
 function boot() {
-  // set default date = hoy local
+  // default date = hoy local (solo se usa cuando logged)
   const now = new Date();
   const yyyy = now.getFullYear();
   const mm = String(now.getMonth() + 1).padStart(2, "0");
   const dd = String(now.getDate()).padStart(2, "0");
-  el("#dateInput").value = `${yyyy}-${mm}-${dd}`;
+  const dateInput = el("#dateInput");
+  if (dateInput) dateInput.value = `${yyyy}-${mm}-${dd}`;
 
-  el("#btnLogin").addEventListener("click", onLogin);
-  el("#btnLogout").addEventListener("click", onLogout);
+  // auth buttons
+  el("#btnLogin")?.addEventListener("click", onLogin);
+  el("#btnLogout")?.addEventListener("click", onLogout);
+  el("#btnRegister")?.addEventListener("click", onRegister);
 
-  const btnReg = el("#btnRegister");
-  if (btnReg) btnReg.addEventListener("click", onRegister);
+  // switch auth modes
+  el("#btnGoRegister")?.addEventListener("click", () => {
+    state.ui.authMode = "register";
+    render();
+  });
+  el("#btnGoLogin")?.addEventListener("click", () => {
+    state.ui.authMode = "login";
+    render();
+  });
 
-
-  el("#btnReload").addEventListener("click", async () => {
+  // reload (solo si sesión)
+  el("#btnReload")?.addEventListener("click", async () => {
     await loadMe();
-    await loadRooms();
-    await loadMyReservations({ silent: true });
+    if (canReserve()) {
+      await loadRooms();
+      await loadMyReservations({ silent: true });
+    }
   });
 
-  const btn = el("#btnReloadReservations");
-  if (btn) {
-    btn.addEventListener("click", async () => {
-      if (!canReserve()) return setMessage("err", "Inicia sesión para ver tus reservas.");
-      await loadMyReservations();
-    });
-  }
-  const avBox = el("#availabilityBox");
-  if (avBox) {
-    avBox.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-slot-start]");
-      if (!btn) return;
-
-      const available = btn.getAttribute("data-slot-available") === "1";
-      if (!available) return;
-
-      const startAt = btn.getAttribute("data-slot-start");
-      const endAt = btn.getAttribute("data-slot-end");
-      pickSlot({ available, startAt, endAt });
-    });
-  }
-
-  //* Cancelar reserva
-  const resBox = el("#reservationsBox");
-  if (resBox) {
-    resBox.addEventListener("click", (e) => {
-      const cancelBtn = e.target.closest("[data-cancel-res]");
-      if (cancelBtn) {
-        const id = cancelBtn.getAttribute("data-cancel-res");
-        cancelReservation(id);
-        return;
-      }
-
-      const inBtn = e.target.closest("[data-checkin-res]");
-      if (inBtn) {
-        const id = inBtn.getAttribute("data-checkin-res");
-        doCheckIn(id);
-        return;
-      }
-
-      const outBtn = e.target.closest("[data-checkout-res]");
-      if (outBtn) {
-        const id = outBtn.getAttribute("data-checkout-res");
-        doCheckOut(id);
-        return;
-      }
-    });
-  }
-
-  loadMe().finally(() => {
-    loadRooms();
-    loadMyReservations({ silent: true });
+  // reload reservations
+  el("#btnReloadReservations")?.addEventListener("click", async () => {
+    if (!canReserve()) return setMessage("err", "Inicia sesión para ver tus reservas.");
+    await loadMyReservations();
   });
 
-  el("#btnAvailability").addEventListener("click", loadAvailability);
+  // availability click
+  el("#btnAvailability")?.addEventListener("click", () => loadAvailability());
 
-  // Modal events
-  el("#modalClose").addEventListener("click", closeModal);
-  el("#modalOverlay").addEventListener("click", (e) => {
+  // slots pick
+  el("#availabilityBox")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-slot-start]");
+    if (!btn) return;
+    const available = btn.getAttribute("data-slot-available") === "1";
+    if (!available) return;
+    pickSlot({
+      available,
+      startAt: btn.getAttribute("data-slot-start"),
+      endAt: btn.getAttribute("data-slot-end"),
+    });
+  });
+
+  // reservations actions
+  el("#reservationsBox")?.addEventListener("click", (e) => {
+    const cancelBtn = e.target.closest("[data-cancel-res]");
+    if (cancelBtn) {
+      openCancelModal(cancelBtn.getAttribute("data-cancel-res"));
+      return;
+    }
+    const inBtn = e.target.closest("[data-checkin-res]");
+    if (inBtn) {
+      doCheckIn(inBtn.getAttribute("data-checkin-res"));
+      return;
+    }
+    const outBtn = e.target.closest("[data-checkout-res]");
+    if (outBtn) {
+      doCheckOut(outBtn.getAttribute("data-checkout-res"));
+      return;
+    }
+  });
+
+  // modal events
+  el("#modalClose")?.addEventListener("click", closeModal);
+  el("#modalOverlay")?.addEventListener("click", (e) => {
     if (e.target.id === "modalOverlay") closeModal();
   });
-  el("#btnCancelReserve").addEventListener("click", closeModal);
-  el("#btnConfirmReserve").addEventListener("click", confirmReserve);
+  el("#btnCancelReserve")?.addEventListener("click", closeModal);
+  el("#btnConfirmReserve")?.addEventListener("click", onModalConfirm);
+
+  // Initial
+  loadMe({ silentNoSession: true }).then(() => {
+    if (canReserve()) {
+      loadRooms();
+      loadMyReservations({ silent: true });
+    }
+  });
 
   render();
 }
-
+// ------------------ HTML ------------------
 document.querySelector("#app").innerHTML = `
-  <div class="container" >
+  <div class="container">
     <div class="topbar">
       <div class="brand">
         <div class="logo"></div>
-        <!-- Top -->
         <div>
           <h1>Acceso y Reservas</h1>
-          <p>Inicie Sesion para reservar horarios disponibles</p>
+          <p>Inicie sesión para reservar horarios disponibles</p>
         </div>
       </div>
       <div class="pills">
@@ -1113,11 +1083,10 @@ document.querySelector("#app").innerHTML = `
 
     <div class="grid">
       <div class="card">
-      <!-- Left Card -->
         <div class="cardHeader">
           <div>
             <h2>Sesión</h2>
-            <p>Login, /auth/me, Availability y Reservas</p>
+            <p>Login / Register y App (solo al iniciar sesión)</p>
           </div>
 
           <div class="row" style="min-width: 240px;">
@@ -1127,82 +1096,94 @@ document.querySelector("#app").innerHTML = `
         </div>
 
         <div class="cardBody">
-          <!-- Login -->
-          <div class="row">
-            <div>
-              <label class="small">Email</label>
-              <input class="input" id="email" placeholder="correo@dominio.com" />
-            </div>
-            <div>
-              <label class="small">Password</label>
-              <input class="input" id="password" type="password" placeholder="Su Contraseña" />
-            </div>
-            <div style="flex:0 0 auto; min-width: 160px;">
-              <label class="small">&nbsp;</label>
-              <button class="btn btnPrimary" id="btnLogin" style="width:100%;">Iniciar sesión</button>
-            </div>
-          </div>
-
           <div style="margin-top:12px;" id="msgBox" class="notice">Listo.</div>
           <div style="margin-top:12px;" id="meBox"></div>
 
-          <hr class="sep"/>
+          <!-- AUTH VIEW -->
+          <div id="authView" style="margin-top:12px;">
+            <!-- Login -->
+            <div id="authLogin" style="margin-top:6px;">
+              <div style="display:flex; flex-direction:column; gap:10px;">
+                <div>
+                  <label class="small">Email</label>
+                  <input class="input" id="email" placeholder="correo@dominio.com" />
+                </div>
+                <div>
+                  <label class="small">Password</label>
+                  <input class="input" id="password" type="password" placeholder="Su contraseña" />
+                </div>
+              </div>
 
-          <!-- Registro -->
-          <div class="sectionTitle" style="margin-top:6px;">
-            <h3>Crear cuenta</h3>
-            <span class="small muted">Registro rápido</span>
+              <div class="row" style="margin-top:12px; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
+                <button class="btn btnPrimary" id="btnLogin" style="min-width:160px;">Iniciar sesión</button>
+                <button class="btn" id="btnGoRegister" style="min-width:160px;">Registrarse</button>
+              </div>
+            </div>
+
+            <!-- Registro -->
+            <div id="registerSection" style="margin-top:14px;">
+              <div class="sectionTitle" style="margin-top:6px;">
+                <h3>Crear cuenta</h3>
+                <span class="small muted">Registro rápido</span>
+              </div>
+
+              <div style="display:flex; flex-direction:column; gap:10px;">
+                <div>
+                  <label class="small">Nombre completo</label>
+                  <input class="input" id="regFullName" placeholder="Tu nombre" />
+                </div>
+
+                <div>
+                  <label class="small">Email</label>
+                  <input class="input" id="regEmail" placeholder="correo@dominio.com" />
+                </div>
+
+                <div>
+                  <label class="small">Password</label>
+                  <input class="input" id="regPassword" type="password" placeholder="Crea una contraseña" />
+                </div>
+              </div>
+
+              <div class="row" style="margin-top:12px; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
+                <button class="btn btnPrimary" id="btnRegister" style="min-width:180px;">Registrarme</button>
+                <button class="btn" id="btnGoLogin" style="min-width:160px;">Volver</button>
+              </div>
+            </div>
           </div>
 
-          <div class="row">
-            <div>
-              <label class="small">Nombre completo</label>
-              <input class="input" id="regFullName" placeholder="Tu nombre" />
+          <!-- APP VIEW (solo logged) -->
+          <div id="appView" style="margin-top:12px;">
+            <hr class="sep"/>
+
+            <!-- Availability -->
+            <div class="row">
+              <div>
+                <label class="small">Fecha</label>
+                <input class="input" id="dateInput" type="date"/>
+              </div>
+              <div style="flex:0 0 auto; min-width: 220px;">
+                <label class="small">&nbsp;</label>
+                <button class="btn" id="btnAvailability" style="width:100%;">Ver horarios</button>
+              </div>
             </div>
-            <div>
-              <label class="small">Email</label>
-              <input class="input" id="regEmail" placeholder="correo@dominio.com" />
+
+            <div style="margin-top:12px;" id="availabilityBox"></div>
+
+            <hr class="sep"/>
+
+            <!-- Mis reservas -->
+            <div class="sectionTitle">
+              <h3>Mis reservas</h3>
+              <button class="btn" id="btnReloadReservations">Actualizar</button>
             </div>
-            <div>
-              <label class="small">Password</label>
-              <input class="input" id="regPassword" type="password" placeholder="Crea una contraseña" />
-            </div>
-            <div style="flex:0 0 auto; min-width: 180px;">
-              <label class="small">&nbsp;</label>
-              <button class="btn btnPrimary" id="btnRegister" style="width:100%;">Registrarme</button>
-            </div>
+            <div style="margin-top:12px;" id="reservationsBox"></div>
           </div>
-
-          <!-- Availability -->
-          <div class="row">
-            <div>
-              <label class="small">Fecha</label>
-              <input class="input" id="dateInput" type="date"/>
-            </div>
-            <div style="flex:0 0 auto; min-width: 220px;">
-              <label class="small">&nbsp;</label>
-              <button class="btn" id="btnAvailability" style="width:100%;">Ver horarios</button>
-            </div>
-          </div>
-
-          <div style="margin-top:12px;" id="availabilityBox"></div>
-
-
-          <hr class="sep"/>
-
-          <!-- Mis reservas -->
-          <div class="sectionTitle">
-            <h3>Mis reservas</h3>
-            <button class="btn" id="btnReloadReservations">Actualizar</button>
-          </div>
-          <div style="margin-top:12px;" id="reservationsBox"></div>
-
         </div>
       </div>
 
-      <div class="card">
+      <!-- ROOMS VIEW (solo logged) -->
+      <div class="card" id="roomsView">
         <div class="cardHeader">
-        <!-- Right Card -->
           <div>
             <h2>Salas</h2>
             <p>Seleccione una sala para ver los horarios disponibles.</p>
@@ -1215,30 +1196,26 @@ document.querySelector("#app").innerHTML = `
     </div>
 
     <div class="footer">
-      <div class="small muted">
-        © Room Booking • Gestión simple de salas y reservas.
+      <div class="small muted">© Room Booking • Gestión simple de salas y reservas.</div>
+      <div class="small muted">Soporte: <span class="muted">contacto@tusitio.com</span></div>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modalOverlay" id="modalOverlay" aria-hidden="true">
+    <div class="modal">
+      <div class="modalHeader">
+        <div class="modalTitle" id="modalTitle">Confirmar</div>
+        <button class="iconBtn" id="modalClose" title="Cerrar">✕</button>
       </div>
-      <div class="small muted">
-        Soporte: <span class="muted">contacto@tusitio.com</span>
+      <div class="modalBody" id="modalBody"></div>
+      <div class="modalFooter">
+        <button class="btn" id="btnCancelReserve">Cancelar</button>
+        <button class="btn btnPrimary" id="btnConfirmReserve">Confirmar reserva</button>
       </div>
     </div>
+  </div>
+`;
 
-  </div >
-
-  <!--Modal Reserva-->
-      <div class="modalOverlay" id="modalOverlay" aria-hidden="true">
-        <div class="modal">
-          <div class="modalHeader">
-            <div class="modalTitle" id="modalTitle">Confirmar reserva</div>
-            <button class="iconBtn" id="modalClose" title="Cerrar">✕</button>
-          </div>
-          <div class="modalBody" id="modalBody"></div>
-          <div class="modalFooter">
-            <button class="btn" id="btnCancelReserve">Cancelar</button>
-            <button class="btn btnPrimary" id="btnConfirmReserve">Confirmar reserva</button>
-          </div>
-        </div>
-      </div>
-    `;
 
 boot();
