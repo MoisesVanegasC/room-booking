@@ -29,6 +29,13 @@ const state = {
   },
 
   cancelTargetId: null,
+
+  admin: {
+    reservations: [],
+    loading: false,
+    error: "",
+  },
+
 };
 
 // ------------------ Helpers UI ------------------
@@ -63,6 +70,26 @@ function setMessage(kind, text) {
   box.className = `notice ${kind === "ok" ? "ok" : kind === "err" ? "err" : ""}`;
   box.textContent = text;
 }
+
+function roomNameById(roomId) {
+  return state.rooms.find(r => r.id === roomId)?.name ?? `Sala (${String(roomId).slice(0, 6)}…)`;
+}
+
+function fmtDateShort(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString([], { weekday: "short", day: "2-digit", month: "short" });
+}
+
+function adminStatusLabel(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "CONFIRMED") return { text: "Activa", cls: "ok" };
+  if (s === "IN_PROGRESS") return { text: "En curso", cls: "ok" };
+  if (s === "FINISHED") return { text: "Finalizada", cls: "off" };
+  if (s === "CANCELLED") return { text: "Cancelada", cls: "off" };
+  if (s === "NO_SHOW") return { text: "No show", cls: "off" };
+  return { text: s || "—", cls: "off" };
+}
+
 
 // ------------------ Modal ------------------
 function openModal() {
@@ -127,6 +154,40 @@ async function loadMe({ silentNoSession = false } = {}) {
     render();
   }
 }
+
+async function loadAdminReservations({ silent = false } = {}) {
+  const me = state.me?.user;
+  const isAdmin = me?.role === "ADMIN";
+
+  if (!isAdmin) {
+    state.admin.reservations = [];
+    return;
+  }
+
+  state.admin.loading = true;
+  state.admin.error = "";
+  render();
+
+  try {
+    const data = await api.adminReservations();
+    const items =
+      Array.isArray(data) ? data :
+        Array.isArray(data?.reservations) ? data.reservations :
+          [];
+
+    state.admin.reservations = items;
+
+    if (!silent) setMessage("ok", `Admin: reservas cargadas (${items.length}).`);
+  } catch (e) {
+    state.admin.reservations = [];
+    state.admin.error = `No se pudo cargar /admin/reservations (${e.status ?? "?"}).`;
+    if (!silent) setMessage("err", state.admin.error);
+  } finally {
+    state.admin.loading = false;
+    render();
+  }
+}
+
 
 async function loadRooms() {
   state.roomsLoading = true;
@@ -246,6 +307,7 @@ async function onLogin() {
   if (canReserve()) {
     await loadRooms();
     await loadMyReservations({ silent: true });
+    await loadAdminReservations({ silent: true });
     setMessage("ok", "Sesión iniciada correctamente.");
   }
 }
@@ -475,6 +537,77 @@ async function onModalConfirm() {
   // si estamos reservando
   await confirmReserve();
 }
+
+// ------------------ Admin agenda ------------------
+function renderAdminAgenda() {
+  const me = state.me?.user;
+  const isAdmin = me?.role === "ADMIN";
+  if (!isAdmin) return "";
+
+  if (state.admin.loading) {
+    return `<div class="notice">Admin: cargando agenda…</div>`;
+  }
+
+  if (state.admin.error) {
+    return `<div class="notice err">${state.admin.error}</div>`;
+  }
+
+  const items = (state.admin.reservations ?? []).slice().sort((a, b) => new Date(b.startAt) - new Date(a.startAt));
+
+  if (!items.length) {
+    return `
+      <div class="notice">
+        <strong>Agenda Admin</strong><br/>
+        <span class="small">No hay reservas registradas.</span>
+      </div>
+    `;
+  }
+
+  const rows = items.slice(0, 20).map((r) => {
+    const roomName = roomNameById(r.roomId);
+    const day = fmtDateShort(r.startAt);
+    const time = `${day} • ${fmtHM(r.startAt)} - ${fmtHM(r.endAt)}`;
+    const st = adminStatusLabel(r.status);
+
+    // Cancelar: admin puede intentar cancelar cualquier reserva
+    // (el backend decidirá si 409/404/…)
+    return `
+      <div class="resRow">
+        <div class="resLeft">
+          <div class="resTop">
+            <strong>${roomName}</strong>
+            <span class="badge ${st.cls}">${st.text}</span>
+          </div>
+          <div class="small muted">${time}</div>
+          <div class="small muted">resId: ${String(r.id).slice(0, 8)}…</div>
+        </div>
+
+        <div class="resRight">
+          <button class="btn btnDanger" data-admin-cancel="${r.id}">
+            Cancelar
+          </button>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  return `
+    <div class="sectionTitle" style="margin-top:12px;">
+      <h3>Agenda Admin</h3>
+      <div class="row" style="gap:10px;">
+        <span class="badge">${items.length}</span>
+        <button class="btn" id="btnAdminReload">Actualizar</button>
+      </div>
+    </div>
+    <div class="resList" style="margin-top:10px;">
+      ${rows}
+    </div>
+    <div class="small muted" style="margin-top:10px;">
+      Mostrando 20 más recientes.
+    </div>
+  `;
+}
+
 
 // ------------------ Reservations rendering ------------------
 function getCheckTimes(r) {
@@ -828,6 +961,11 @@ function render() {
   // Mis reservas
   const rb = el("#reservationsBox");
   if (rb) rb.innerHTML = renderReservations();
+
+  // Agenda admin
+  const adminBox = el("#adminAgendaBox");
+  if (adminBox) adminBox.innerHTML = renderAdminAgenda();
+
 
   // Rooms
   const roomsHtml = state.rooms
@@ -1197,17 +1335,35 @@ function boot() {
 
   render();
 }
-// ------------------ HTML ------------------
+
+// ------------------ Admin agenda actions ------------------
+document.addEventListener("click", (e) => {
+  const btnReload = e.target.closest("#btnAdminReload");
+  if (btnReload) {
+    loadAdminReservations();
+    return;
+  }
+
+  const cancelBtn = e.target.closest("[data-admin-cancel]");
+  if (cancelBtn) {
+    const id = cancelBtn.getAttribute("data-admin-cancel");
+    openCancelModal(id);
+    return;
+  }
+});
+
+// ------------------ HTML (TEXTOS RECONFIGURADOS) ------------------
 document.querySelector("#app").innerHTML = `
   <div class="container">
     <div class="topbar">
       <div class="brand">
         <div class="logo"></div>
         <div>
-          <h1>Acceso y Reservas</h1>
-          <p>Inicie sesión para reservar horarios disponibles</p>
+          <h1>Reservas de Salas</h1>
+          <p>Consulta disponibilidad y administra tus reservas en minutos.</p>
         </div>
       </div>
+
       <div class="pills">
         <div class="pill" id="pillStatus"></div>
         <div class="pill" id="pillUser"></div>
@@ -1219,8 +1375,8 @@ document.querySelector("#app").innerHTML = `
       <div class="card">
         <div class="cardHeader">
           <div>
-            <h2>Sesión</h2>
-            <p>Login / Register y App (solo al iniciar sesión)</p>
+            <h2>Cuenta y Reservas</h2>
+            <p>Inicia sesión para ver salas, horarios y tus reservas.</p>
           </div>
 
           <div class="row" style="min-width: 240px;">
@@ -1230,7 +1386,9 @@ document.querySelector("#app").innerHTML = `
         </div>
 
         <div class="cardBody">
-          <div style="margin-top:12px;" id="msgBox" class="notice">Listo.</div>
+          <div style="margin-top:12px;" id="msgBox" class="notice">
+            Listo. Inicie sesión para continuar.
+          </div>
           <div style="margin-top:12px;" id="meBox"></div>
 
           <!-- AUTH VIEW -->
@@ -1239,18 +1397,19 @@ document.querySelector("#app").innerHTML = `
             <div id="authLogin" style="margin-top:6px;">
               <div style="display:flex; flex-direction:column; gap:10px;">
                 <div>
-                  <label class="small">Email</label>
+                  <label class="small">Correo</label>
                   <input class="input" id="email" placeholder="correo@dominio.com" />
                 </div>
+
                 <div>
-                  <label class="small">Password</label>
-                  <input class="input" id="password" type="password" placeholder="Su contraseña" />
+                  <label class="small">Contraseña</label>
+                  <input class="input" id="password" type="password" placeholder="Tu contraseña" />
                 </div>
               </div>
 
               <div class="row" style="margin-top:12px; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
-                <button class="btn btnPrimary" id="btnLogin" style="min-width:160px;">Iniciar sesión</button>
-                <button class="btn" id="btnGoRegister" style="min-width:160px;">Registrarse</button>
+                <button class="btn btnPrimary" id="btnLogin" style="min-width:160px;">Entrar</button>
+                <button class="btn" id="btnGoRegister" style="min-width:160px;">Crear cuenta</button>
               </div>
             </div>
 
@@ -1258,29 +1417,29 @@ document.querySelector("#app").innerHTML = `
             <div id="registerSection" style="margin-top:14px;">
               <div class="sectionTitle" style="margin-top:6px;">
                 <h3>Crear cuenta</h3>
-                <span class="small muted">Registro rápido</span>
+                <span class="small muted">Toma menos de 1 minuto</span>
               </div>
 
               <div style="display:flex; flex-direction:column; gap:10px;">
                 <div>
                   <label class="small">Nombre completo</label>
-                  <input class="input" id="regFullName" placeholder="Tu nombre" />
+                  <input class="input" id="regFullName" placeholder="Tu nombre y apellidos" />
                 </div>
 
                 <div>
-                  <label class="small">Email</label>
+                  <label class="small">Correo</label>
                   <input class="input" id="regEmail" placeholder="correo@dominio.com" />
                 </div>
 
                 <div>
-                  <label class="small">Password</label>
+                  <label class="small">Contraseña</label>
                   <input class="input" id="regPassword" type="password" placeholder="Crea una contraseña" />
                 </div>
               </div>
 
               <div class="row" style="margin-top:12px; justify-content:flex-end; gap:10px; flex-wrap:wrap;">
-                <button class="btn btnPrimary" id="btnRegister" style="min-width:180px;">Registrarme</button>
-                <button class="btn" id="btnGoLogin" style="min-width:160px;">Volver</button>
+                <button class="btn btnPrimary" id="btnRegister" style="min-width:180px;">Crear cuenta</button>
+                <button class="btn" id="btnGoLogin" style="min-width:160px;">Volver a iniciar sesión</button>
               </div>
             </div>
           </div>
@@ -1290,6 +1449,11 @@ document.querySelector("#app").innerHTML = `
             <hr class="sep"/>
 
             <!-- Availability -->
+            <div class="sectionTitle" style="margin-top:4px;">
+              <h3>Disponibilidad</h3>
+              <span class="small muted">Elija una fecha y consulte horarios</span>
+            </div>
+
             <div class="row">
               <div>
                 <label class="small">Fecha</label>
@@ -1305,10 +1469,15 @@ document.querySelector("#app").innerHTML = `
 
             <hr class="sep"/>
 
+            <div style="margin-top:12px;" id="adminAgendaBox"></div>
+
             <!-- Mis reservas -->
             <div class="sectionTitle">
               <h3>Mis reservas</h3>
               <button class="btn" id="btnReloadReservations">Actualizar</button>
+            </div>
+            <div class="small muted" style="margin-top:6px;">
+              Aquí verá sus reservas de hoy, próximas y pasadas.
             </div>
             <div style="margin-top:12px;" id="reservationsBox"></div>
           </div>
@@ -1320,7 +1489,7 @@ document.querySelector("#app").innerHTML = `
         <div class="cardHeader">
           <div>
             <h2>Salas</h2>
-            <p>Seleccione una sala para ver los horarios disponibles.</p>
+            <p>Seleccione una sala para consultar su disponibilidad.</p>
           </div>
         </div>
         <div class="cardBody">
@@ -1330,7 +1499,7 @@ document.querySelector("#app").innerHTML = `
     </div>
 
     <div class="footer">
-      <div class="small muted">© Room Booking • Gestión simple de salas y reservas.</div>
+      <div class="small muted">© Room Booking • Reservas internas</div>
       <div class="small muted">Soporte: <span class="muted">contacto@tusitio.com</span></div>
     </div>
   </div>
@@ -1339,17 +1508,16 @@ document.querySelector("#app").innerHTML = `
   <div class="modalOverlay" id="modalOverlay" aria-hidden="true">
     <div class="modal">
       <div class="modalHeader">
-        <div class="modalTitle" id="modalTitle">Confirmar</div>
+        <div class="modalTitle" id="modalTitle">Confirmar acción</div>
         <button class="iconBtn" id="modalClose" title="Cerrar">✕</button>
       </div>
       <div class="modalBody" id="modalBody"></div>
       <div class="modalFooter">
         <button class="btn" id="btnCancelReserve">Cancelar</button>
-        <button class="btn btnPrimary" id="btnConfirmReserve">Confirmar reserva</button>
+        <button class="btn btnPrimary" id="btnConfirmReserve">Confirmar</button>
       </div>
     </div>
   </div>
 `;
-
 
 boot();

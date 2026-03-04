@@ -80,4 +80,7 @@ export const api = {
     checkIn: (id) => apiFetch(`/reservations/${id}/check-in`, { method: "PATCH" }),
     checkOut: (id) => apiFetch(`/reservations/${id}/check-out`, { method: "PATCH" }),
 
+    adminReservations() {
+        return apiFetch(`/admin/reservations`);
+    },
 };
